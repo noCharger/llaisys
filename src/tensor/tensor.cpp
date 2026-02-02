@@ -164,20 +164,18 @@ void Tensor::debug() const {
 }
 
 bool Tensor::isContiguous() const {
-    // TO_BE_IMPLEMENTED();
-    size_t expected_stride = 1;
+    ptrdiff_t expected_stride = 1;
     for (size_t i = ndim(); i > 0; --i) {
         size_t dim = i - 1;
         if (_meta.strides[dim] != expected_stride) {
             return false;
         }
-        expected_stride *= _meta.shape[dim];
+        expected_stride *= static_cast<ptrdiff_t>(_meta.shape[dim]); 
     }
     return true;
 }
 
 tensor_t Tensor::permute(const std::vector<size_t> &order) const {
-    // TO_BE_IMPLEMENTED();
     size_t n = this->ndim();
     CHECK_ARGUMENT(order.size() == n, 
                    "Tensor::permute: order size mismatch. Expected " + 
@@ -195,7 +193,7 @@ tensor_t Tensor::permute(const std::vector<size_t> &order) const {
     }
 
     std::vector<size_t> new_shape(n);
-    std::vector<ptrdiff_t> new_strides(_meta.strides);
+    std::vector<ptrdiff_t> new_strides(n);
     for (size_t i = 0; i < n; ++i) {
         new_shape[i] = _meta.shape[order[i]];
         new_strides[i] = _meta.strides[order[i]];
@@ -206,7 +204,6 @@ tensor_t Tensor::permute(const std::vector<size_t> &order) const {
 }
 
 tensor_t Tensor::view(const std::vector<size_t> &shape) const {
-    // TO_BE_IMPLEMENTED();
     size_t new_numel = std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies<size_t>());
 
     CHECK_ARGUMENT(new_numel == this->numel(),
@@ -219,10 +216,11 @@ tensor_t Tensor::view(const std::vector<size_t> &shape) const {
     
     std::vector<ptrdiff_t> new_strides(shape.size());
     
-    size_t stride = 1;
-    for (size_t i = 1; i <= shape.size(); ++i) {
-        new_strides[shape.size() - i] = stride;
-        stride *= shape[shape.size() - i];
+    ptrdiff_t stride = 1;
+    for (size_t i = shape.size(); i > 0; --i) {
+        size_t idx = i - 1;
+        new_strides[idx] = stride;
+        stride *= static_cast<ptrdiff_t>(shape[idx]);
     }
 
     TensorMeta new_meta{_meta.dtype, shape, new_strides};
@@ -231,7 +229,6 @@ tensor_t Tensor::view(const std::vector<size_t> &shape) const {
 }
 
 tensor_t Tensor::slice(size_t dim, size_t start, size_t end) const {
-    // TO_BE_IMPLEMENTED();
     size_t n = this->ndim();
     CHECK_ARGUMENT(dim < n,
                    "Tensor::slice: dimension index out of range. Expected < " + 
@@ -245,7 +242,9 @@ tensor_t Tensor::slice(size_t dim, size_t start, size_t end) const {
     std::vector<size_t> new_shape = _meta.shape;
     new_shape[dim] = end - start;
 
-    size_t new_offset = _offset + start * _meta.strides[dim] * this->elementSize();
+    ptrdiff_t elem_offset = static_cast<ptrdiff_t>(start) * _meta.strides[dim];
+    size_t byte_offset = static_cast<size_t>(elem_offset) * this->elementSize();
+    size_t new_offset = _offset + byte_offset;
 
     TensorMeta new_meta{_meta.dtype, new_shape, _meta.strides};
     return std::shared_ptr<Tensor>(new Tensor(new_meta, _storage, new_offset));
