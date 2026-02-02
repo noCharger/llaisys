@@ -103,7 +103,7 @@ inline void validate_argmax_tensors(const tensor_t& max_idx,
 void argmax(tensor_t max_idx, tensor_t max_val, tensor_t vals) {
     validate_argmax_tensors(max_idx, max_val, vals);
     
-    // CPU path - optimized with direct conversions
+    // CPU path optimized with direct conversions
     if (vals->deviceType() == LLAISYS_DEVICE_CPU) {
         switch (vals->dtype()) {
             case LLAISYS_DTYPE_F32:
