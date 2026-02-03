@@ -1,6 +1,5 @@
 #include "op.hpp"
 #include "../common.hpp"
-#include <cstring>
 
 namespace llaisys::ops {
 namespace {
@@ -28,21 +27,19 @@ void embedding_cpu(const tensor_t& out, const tensor_t& index, const tensor_t& w
     const size_t D = weight->shape()[1];
 
     const int64_t* idx_ptr = reinterpret_cast<const int64_t*>(index->data());
-    char* out_ptr = reinterpret_cast<char*>(out->data());
-    const char* w_ptr = reinterpret_cast<const char*>(weight->data());
-    const size_t row_bytes = D * out->elementSize();
+    uint8_t* out_ptr = reinterpret_cast<uint8_t*>(out->data());
+    const uint8_t* w_ptr = reinterpret_cast<const uint8_t*>(weight->data());
+    const size_t row_bytes = D * weight->elementSize();
 
     for (size_t i = 0; i < N; ++i) {
         const int64_t idx = idx_ptr[i];
         ASSERT(idx >= 0 && static_cast<size_t>(idx) < V, "Embedding: index out of range.");
+        const size_t idx_u = static_cast<size_t>(idx);
+        void* dst = static_cast<void*>(out_ptr + i * row_bytes);
+        const void* src = static_cast<const void*>(w_ptr + idx_u * row_bytes);
         // Use runtime device-aware memcpy for CPU (H2H). This is equivalent to std::memcpy on CPU
-        llaisys::core::context().runtime().api()->memcpy_sync(
-            static_cast<void*>(out_ptr + i * row_bytes),
-            static_cast<const void*>(w_ptr + static_cast<size_t>(idx) * row_bytes),
-            row_bytes,
-            LLAISYS_MEMCPY_H2H
-        );
-    }
+        llaisys::core::context().runtime().api()->memcpy_sync(dst, src, row_bytes, LLAISYS_MEMCPY_H2H);
+    }    
 }
 
 } // anonymous namespace
