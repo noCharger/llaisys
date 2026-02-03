@@ -1,13 +1,8 @@
 #include "op.hpp"
-#include <cstddef>
+#include "../common.hpp"
 
 namespace llaisys::ops {
 namespace {
-
-// Helper to check all tensors are contiguous
-inline bool allContiguous(const tensor_t& t1, const tensor_t& t2, const tensor_t& t3) {
-    return t1->isContiguous() && t2->isContiguous() && t3->isContiguous();
-}
 
 // Direct conversion helpers to avoid the generic cast overhead
 template<typename T>
@@ -93,7 +88,7 @@ inline void validate_argmax_tensors(const tensor_t& max_idx,
     CHECK_SAME_DTYPE(max_val->dtype(), vals->dtype());
     ASSERT(max_idx->dtype() == LLAISYS_DTYPE_I64, 
            "Argmax: index tensor must be int64.");
-    ASSERT(allContiguous(max_idx, max_val, vals), 
+    ASSERT(llaisys::ops::common::allContiguous(max_idx, max_val, vals), 
            "Argmax: all tensors must be contiguous.");
     ASSERT(vals->numel() > 0, "Argmax: vals must have at least one element.");
 }
