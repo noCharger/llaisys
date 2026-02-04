@@ -58,14 +58,13 @@ void embedding(tensor_t out, tensor_t index, tensor_t weight) {
     // Non-CPU devices
     llaisys::core::context().setDevice(out->deviceType(), out->deviceId());
 
-    switch (out->deviceType()) {
 #ifdef ENABLE_NVIDIA_API
-    case LLAISYS_DEVICE_NVIDIA:
+    if (out->deviceType() == LLAISYS_DEVICE_NVIDIA) {
         TO_BE_IMPLEMENTED();
         return;
-#endif
-    default:
-        EXCEPTION_UNSUPPORTED_DEVICE;
     }
+#endif
+
+    EXCEPTION_UNSUPPORTED_DEVICE;
 }
 } // namespace llaisys::ops
