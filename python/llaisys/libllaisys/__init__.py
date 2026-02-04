@@ -12,6 +12,7 @@ from .llaisys_types import llaisysStream_t
 from .tensor import llaisysTensor_t
 from .tensor import load_tensor
 from .ops import load_ops
+from .qwen2 import load_qwen2, LlaisysQwen2Meta, LlaisysQwen2Weights
 
 
 def load_shared_library():
@@ -22,7 +23,7 @@ def load_shared_library():
     elif sys.platform == "win32":
         libname = "llaisys.dll"
     elif sys.platform == "darwin":
-        libname = "llaisys.dylib"
+        libname = "libllaisys.dylib"
     else:
         raise RuntimeError("Unsupported platform")
 
@@ -38,6 +39,7 @@ LIB_LLAISYS = load_shared_library()
 load_runtime(LIB_LLAISYS)
 load_tensor(LIB_LLAISYS)
 load_ops(LIB_LLAISYS)
+load_qwen2(LIB_LLAISYS)
 
 
 __all__ = [
@@ -52,4 +54,6 @@ __all__ = [
     "llaisysMemcpyKind_t",
     "MemcpyKind",
     "llaisysStream_t",
+    "LlaisysQwen2Meta",
+    "LlaisysQwen2Weights",
 ]
