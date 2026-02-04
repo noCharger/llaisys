@@ -5,9 +5,16 @@ from ..libllaisys import LlaisysQwen2Meta, LlaisysQwen2Weights
 
 from pathlib import Path
 import safetensors.numpy
+import safetensors
 import json
 import ctypes
 import numpy as np
+
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
 
 class Qwen2:
 
@@ -44,15 +51,23 @@ class Qwen2:
         self.weights = LIB_LLAISYS.llaisysQwen2ModelWeights(self.model).contents
 
         for file in sorted(model_path.glob("*.safetensors")):
-            with safetensors.safe_open(file, framework="numpy", device="cpu") as f:
+            framework = "pt" if HAS_TORCH else "numpy"
+            with safetensors.safe_open(file, framework=framework, device="cpu") as f:
                 for name in f.keys():
                     ptr = self._get_tensor_ptr(name)
                     if ptr:
                         data = f.get_tensor(name)
-                        if data.dtype != np.float32:
-                            data = data.astype(np.float32)
-                        if not data.flags['C_CONTIGUOUS']:
-                            data = np.ascontiguousarray(data)
+                        
+                        # Handle Torch Tensors (converts bf16 if needed)
+                        if HAS_TORCH and isinstance(data, torch.Tensor):
+                            data = data.float().numpy()
+                            
+                        # Handle Numpy (ensure float32)
+                        if isinstance(data, np.ndarray):
+                            if data.dtype != np.float32:
+                                data = data.astype(np.float32)
+                            if not data.flags['C_CONTIGUOUS']:
+                                data = np.ascontiguousarray(data)
                         
                         LIB_LLAISYS.tensorLoad(ptr, data.ctypes.data_as(ctypes.c_void_p))
 
