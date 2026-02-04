@@ -4,61 +4,25 @@
 namespace llaisys::ops {
 namespace {
 
-// Direct conversion helpers to avoid the generic cast overhead
-template<typename T>
-inline float to_float_for_comparison(T val);
-
-template<>
-inline float to_float_for_comparison<float>(float val) {
-    return val;  // No conversion needed
-}
-
-template<>
-inline float to_float_for_comparison<llaisys::fp16_t>(llaisys::fp16_t val) {
-    return llaisys::utils::_f16_to_f32(val);
-}
-
-template<>
-inline float to_float_for_comparison<llaisys::bf16_t>(llaisys::bf16_t val) {
-    return llaisys::utils::_bf16_to_f32(val);
-}
-
-template<typename T>
-inline T from_float(float val);
-
-template<>
-inline float from_float<float>(float val) {
-    return val;
-}
-
-template<>
-inline llaisys::fp16_t from_float<llaisys::fp16_t>(float val) {
-    return llaisys::utils::_f32_to_f16(val);
-}
-
-template<>
-inline llaisys::bf16_t from_float<llaisys::bf16_t>(float val) {
-    return llaisys::utils::_f32_to_bf16(val);
-}
-
+// Use shared helpers from ops/common.hpp to avoid duplication
 template<typename T>
 std::pair<int64_t, T> compute_argmax(const T* data, size_t n) {
     if (n == 0) return {0, T{0}};
     
-    float best_val_f = to_float_for_comparison(data[0]);
+    float best_val_f = llaisys::ops::common::to_float(data[0]);
     int64_t best_idx = 0;
     
     // Use pointer arithmetic for potential auto-vectorization
     const T* current = data + 1;
     for (size_t i = 1; i < n; ++i, ++current) {
-        float cur_f = to_float_for_comparison(*current);
+        float cur_f = llaisys::ops::common::to_float(*current);
         if (cur_f > best_val_f) {
             best_val_f = cur_f;
             best_idx = static_cast<int64_t>(i);
         }
     }
     
-    return {best_idx, from_float<T>(best_val_f)};
+    return {best_idx, llaisys::ops::common::from_float<T>(best_val_f)};
 }
 
 // CPU implementation using direct conversions
