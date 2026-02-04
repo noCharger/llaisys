@@ -1,5 +1,6 @@
 #include "op.hpp"
 #include "../common.hpp"
+#include <cmath>
 
 namespace llaisys::ops {
 namespace {
@@ -39,21 +40,24 @@ void rms_norm_cpu(const tensor_t& out,
     for (size_t i = 0; i < N; ++i) {
         const T* in_row = in_ptr + i * D;
 
-        float sumsq = 0.0f;
+        // Use double for accumulation to prevent precision loss on large features (e.g., 4096)
+        double sumsq = 0.0;
         for (size_t j = 0; j < D; ++j) {
-            const float x = llaisys::ops::common::to_float(in_row[j]);
+            const double x = static_cast<double>(llaisys::ops::common::to_float(in_row[j]));
             sumsq += x * x;
         }
 
-        const float mean = sumsq / static_cast<float>(D);
-        const float inv_rms = 1.0f / std::sqrt(mean + eps);
+        const double mean = sumsq / static_cast<double>(D);
+        const double inv_rms = 1.0 / std::sqrt(mean + static_cast<double>(eps));
 
         T* out_row = out_ptr + i * D;
         for (size_t j = 0; j < D; ++j) {
-            const float x = llaisys::ops::common::to_float(in_row[j]);
-            const float w = llaisys::ops::common::to_float(w_ptr[j]);
-            const float y = x * inv_rms * w;
-            out_row[j] = llaisys::ops::common::from_float<T>(y);
+            const double x = static_cast<double>(llaisys::ops::common::to_float(in_row[j]));
+            const double w = static_cast<double>(llaisys::ops::common::to_float(w_ptr[j]));
+            
+            // Perform scaling in double before casting back
+            const double y = x * inv_rms * w;
+            out_row[j] = llaisys::ops::common::from_float<T>(static_cast<float>(y));
         }
     }
 }
