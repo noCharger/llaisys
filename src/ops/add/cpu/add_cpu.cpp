@@ -4,6 +4,14 @@
 
 #include <cmath>
 
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
+
+#if defined(__AVX2__)
+#include <immintrin.h>
+#endif
+
 template <typename T>
 void add_(T *c, const T *a, const T *b, size_t numel) {
     for (size_t i = 0; i < numel; i++) {
@@ -12,6 +20,31 @@ void add_(T *c, const T *a, const T *b, size_t numel) {
         } else {
             c[i] = a[i] + b[i];
         }
+    }
+}
+
+template <>
+void add_<float>(float *c, const float *a, const float *b, size_t numel) {
+    size_t i = 0;
+
+#if defined(__AVX2__)
+    for (; i + 7 < numel; i += 8) {
+        __m256 va = _mm256_loadu_ps(a + i);
+        __m256 vb = _mm256_loadu_ps(b + i);
+        __m256 vc = _mm256_add_ps(va, vb);
+        _mm256_storeu_ps(c + i, vc);
+    }
+#elif defined(__ARM_NEON)
+    for (; i + 3 < numel; i += 4) {
+        float32x4_t va = vld1q_f32(a + i);
+        float32x4_t vb = vld1q_f32(b + i);
+        float32x4_t vc = vaddq_f32(va, vb);
+        vst1q_f32(c + i, vc);
+    }
+#endif
+
+    for (; i < numel; i++) {
+        c[i] = a[i] + b[i];
     }
 }
 
