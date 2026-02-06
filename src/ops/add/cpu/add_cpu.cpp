@@ -1,7 +1,3 @@
-#include "add_cpu.hpp"
-
-#include "../../../utils.hpp"
-
 #include <cmath>
 
 #if defined(__ARM_NEON)
@@ -11,6 +7,10 @@
 #if defined(__AVX2__)
 #include <immintrin.h>
 #endif
+
+#include "add_cpu.hpp"
+
+#include "../../../utils.hpp"
 
 template <typename T>
 void add_(T *c, const T *a, const T *b, size_t numel) {
