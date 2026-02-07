@@ -44,14 +44,17 @@ void linear_cpu(const tensor_t& out,
     const T* b = reinterpret_cast<const T*>(bias->data());
     T* y = reinterpret_cast<T*>(out->data());
 
-    // Row-major contiguous layout assumed by validation
+    std::vector<float> bias_float(O);
+    for (size_t o = 0; o < O; ++o) {
+        bias_float[o] = llaisys::ops::common::to_float(b[o]);
+    }
+
     for (size_t n = 0; n < N; ++n) {
         const T* x_row = x + n * I;
         for (size_t o = 0; o < O; ++o) {
             const T* w_row = w + o * I;
-            float acc = llaisys::ops::common::to_float(b[o]);
+            float acc = bias_float[o];
 
-            // Dot product over input features
             for (size_t i = 0; i < I; ++i) {
                 acc += llaisys::ops::common::to_float(x_row[i]) * llaisys::ops::common::to_float(w_row[i]);
             }
@@ -63,27 +66,10 @@ void linear_cpu(const tensor_t& out,
 } // anonymous namespace
 
 void linear(tensor_t out, tensor_t in, tensor_t weight, tensor_t bias) {
-
     validate_linear_tensors(out, in, weight, bias);
-
-    if (out->deviceType() == LLAISYS_DEVICE_CPU) {
-        switch (out->dtype()) {
-        case LLAISYS_DTYPE_F32:
-            linear_cpu<float>(out, in, weight, bias);
-            return;
-        case LLAISYS_DTYPE_F16:
-            linear_cpu<llaisys::fp16_t>(out, in, weight, bias);
-            return;
-        case LLAISYS_DTYPE_BF16:
-            linear_cpu<llaisys::bf16_t>(out, in, weight, bias);
-            return;
-        default:
-            EXCEPTION_UNSUPPORTED_DATATYPE(out->dtype());
-        }
-    }
-
+    
     llaisys::core::context().setDevice(out->deviceType(), out->deviceId());
-
+    
     switch (out->deviceType()) {
     case LLAISYS_DEVICE_CPU:
         switch (out->dtype()) {
@@ -99,11 +85,14 @@ void linear(tensor_t out, tensor_t in, tensor_t weight, tensor_t bias) {
         default:
             EXCEPTION_UNSUPPORTED_DATATYPE(out->dtype());
         }
+        break;
+        
 #ifdef ENABLE_NVIDIA_API
     case LLAISYS_DEVICE_NVIDIA:
         TO_BE_IMPLEMENTED();
         return;
 #endif
+        
     default:
         EXCEPTION_UNSUPPORTED_DEVICE;
     }
