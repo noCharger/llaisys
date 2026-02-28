@@ -88,3 +88,6 @@ htmlcov/
 Thumbs.db
 ehthumbs.db
 desktop.ini
+
+# Node.js
+node_modules/
