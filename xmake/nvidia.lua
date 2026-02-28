@@ -5,6 +5,7 @@ target("llaisys-device-nvidia")
     
     if is_plat("linux") then
         add_cugencodes("native")
+        add_cuflags("-Xcompiler -fPIC")
     end
 
     add_files("../src/device/nvidia/*.cu")
@@ -18,6 +19,7 @@ target("llaisys-ops-nvidia")
 
     if is_plat("linux") then
         add_cugencodes("native")
+        add_cuflags("-Xcompiler -fPIC")
     end
 
     add_links("cublas")
