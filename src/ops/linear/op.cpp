@@ -1,6 +1,10 @@
 #include "op.hpp"
 #include "../common.hpp"
 
+#ifdef ENABLE_NVIDIA_API
+#include "nvidia/linear_nvidia.hpp"
+#endif
+
 namespace llaisys::ops {
 namespace {
 

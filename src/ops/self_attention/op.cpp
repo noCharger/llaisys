@@ -5,6 +5,10 @@
 #include <limits>
 #include <vector>
 
+#ifdef ENABLE_NVIDIA_API
+#include "nvidia/self_attention_nvidia.hpp"
+#endif
+
 namespace llaisys::ops {
 namespace {
 

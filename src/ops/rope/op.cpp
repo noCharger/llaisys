@@ -2,6 +2,10 @@
 #include "../common.hpp"
 #include <cmath>
 
+#ifdef ENABLE_NVIDIA_API
+#include "nvidia/rope_nvidia.hpp"
+#endif
+
 namespace llaisys::ops {
 namespace {
 

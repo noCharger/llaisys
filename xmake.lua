@@ -1,5 +1,6 @@
 add_rules("mode.debug", "mode.release")
 add_includedirs("include")
+add_includedirs("src")
 set_encodings("utf-8")
 
 option("nv-gpu")
