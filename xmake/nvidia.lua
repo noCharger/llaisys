@@ -20,5 +20,6 @@ target("llaisys-ops-nvidia")
         add_cugencodes("native")
     end
 
+    add_links("cublas")
     add_files("../src/ops/*/nvidia/*.cu")
 target_end()

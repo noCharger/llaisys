@@ -2,6 +2,10 @@
 #include "../common.hpp"
 #include <cmath>
 
+#ifdef ENABLE_NVIDIA_API
+#include "nvidia/rms_norm_nvidia.hpp"
+#endif
+
 namespace llaisys::ops {
 namespace {
 
@@ -87,7 +91,7 @@ void rms_norm(tensor_t out, tensor_t in, tensor_t weight, float eps) {
 
 #ifdef ENABLE_NVIDIA_API
     if (out->deviceType() == LLAISYS_DEVICE_NVIDIA) {
-        TO_BE_IMPLEMENTED();
+        nvidia::rms_norm(out, in, weight, eps);
         return;
     }
 #endif

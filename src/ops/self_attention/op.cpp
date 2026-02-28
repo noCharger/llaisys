@@ -191,7 +191,7 @@ void self_attention(tensor_t attn_val, tensor_t q, tensor_t k, tensor_t v, float
 
 #ifdef ENABLE_NVIDIA_API
     if (attn_val->deviceType() == LLAISYS_DEVICE_NVIDIA) {
-        TO_BE_IMPLEMENTED();
+        nvidia::self_attention(attn_val, q, k, v, scale);
         return;
     }
 #endif

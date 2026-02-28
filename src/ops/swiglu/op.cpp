@@ -2,6 +2,10 @@
 #include "../common.hpp"
 #include <cmath>
 
+#ifdef ENABLE_NVIDIA_API
+#include "nvidia/swiglu_nvidia.hpp"
+#endif
+
 namespace llaisys::ops {
 namespace {
 
@@ -78,7 +82,7 @@ void swiglu(tensor_t out, tensor_t gate, tensor_t up) {
 
 #ifdef ENABLE_NVIDIA_API
     if (out->deviceType() == LLAISYS_DEVICE_NVIDIA) {
-        TO_BE_IMPLEMENTED();
+        nvidia::swiglu(out, gate, up);
         return;
     }
 #endif
