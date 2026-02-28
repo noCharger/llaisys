@@ -5,7 +5,7 @@ parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, parent_dir)
 import llaisys
 import torch
-from test_utils import arrange_tensor, random_tensor, check_equal, benchmark
+from test_utils import arrange_tensor, random_tensor, check_equal, benchmark, set_seed
 
 
 def torch_rope(y: torch.Tensor, x: torch.Tensor, pos_ids: torch.Tensor, theta: float):
@@ -66,6 +66,7 @@ if __name__ == "__main__":
     parser.add_argument("--device", default="cpu", choices=["cpu", "nvidia"], type=str)
     parser.add_argument("--profile", action="store_true")
     args = parser.parse_args()
+    set_seed()
     testShapes = [
         ((2, 1, 4), (0, 2)), 
         ((512, 4, 4096), (512, 1024))]
