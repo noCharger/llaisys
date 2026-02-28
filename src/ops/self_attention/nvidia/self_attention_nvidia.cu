@@ -1,8 +1,11 @@
 #include "self_attention_nvidia.hpp"
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
+#include <cuda_fp16.h>
+#include <cuda_bf16.h> // Added for bf16 support
 #include <stdexcept>
 #include <cmath>
+#include <float.h>
 
 namespace llaisys::ops::nvidia {
 
@@ -16,73 +19,114 @@ private:
 };
 
 template <typename T>
-__global__ void softmax_kernel(T* x, int N, int D) {
-    int row = blockIdx.x * blockDim.x + threadIdx.x;
-    if (row < N) {
-        T* x_row = x + row * D;
-        float max_val = -1e30f;
-        for (int i = 0; i < D; ++i) {
-            float val = static_cast<float>(x_row[i]);
+__global__ void attention_softmax_kernel(T* scores, int q_len, int kv_len, int nhead, float scale) {
+    int h = blockIdx.y; 
+    int q_idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (q_idx < q_len && h < nhead) {
+        // Offset for Row-Major [nhead, q_len, kv_len]
+        T* row = scores + (h * q_len + q_idx) * kv_len;
+        
+        // Causal mask: query token q_idx can only see keys up to its own position
+        int mask_limit = q_idx + (kv_len - q_len);
+
+        float max_val = -FLT_MAX;
+        for (int i = 0; i <= mask_limit; ++i) {
+            float val = static_cast<float>(row[i]) * scale;
             if (val > max_val) max_val = val;
         }
+
         float sum_exp = 0.0f;
-        for (int i = 0; i < D; ++i) {
-            float val = static_cast<float>(x_row[i]);
-            float res = expf(val - max_val);
-            x_row[i] = static_cast<T>(res);
-            sum_exp += res;
+        for (int i = 0; i < kv_len; ++i) {
+            if (i <= mask_limit) {
+                float val = expf((static_cast<float>(row[i]) * scale) - max_val);
+                row[i] = static_cast<T>(val);
+                sum_exp += val;
+            } else {
+                row[i] = static_cast<T>(0.0f); // Effectively -inf before exp
+            }
         }
-        float inv_sum = 1.0f / sum_exp;
-        for (int i = 0; i < D; ++i) {
-            float val = static_cast<float>(x_row[i]);
-            x_row[i] = static_cast<T>(val * inv_sum);
+
+        float inv_sum = 1.0f / (sum_exp + 1e-9f);
+        for (int i = 0; i < kv_len; ++i) {
+            row[i] = static_cast<T>(static_cast<float>(row[i]) * inv_sum);
         }
     }
 }
 
-void self_attention(tensor_t attn_val, tensor_t q, tensor_t k, tensor_t v, float scale) {
+// Helper template to support f32, f16, and bf16 natively
+template <typename T, cudaDataType_t CudaType>
+void self_attention_impl(tensor_t attn_val, tensor_t q, tensor_t k, tensor_t v, float scale) {
+    int q_len = q->shape()[0];
     int nhead = q->shape()[1];
     int head_dim = q->shape()[2];
-    int seq_len = k->shape()[0];
-    int nkv_head = k->shape()[1];
-    
-    if (nhead % nkv_head != 0) throw std::runtime_error("SelfAttention: GQA mismatch");
-    int group_size = nhead / nkv_head;
+    int kv_len = k->shape()[0];
+    int nkvh = k->shape()[1];
     
     CublasHandle handle;
-    float alpha = scale, beta = 0.0f, one = 1.0f, zero = 0.0f;
     
-    float* scores_dev;
-    cudaMalloc(&scores_dev, nhead * seq_len * sizeof(float));
-    
-    const float* q_ptr = (const float*)q->data();
-    const float* k_ptr = (const float*)k->data();
-    const float* v_ptr = (const float*)v->data();
-    float* out_ptr = (float*)attn_val->data();
-    
-    // Q * K^T
-    for (int h = 0; h < nhead; ++h) {
-        int kv_h = h / group_size;
-        cublasSgemv(handle.get(), CUBLAS_OP_T, head_dim, seq_len, &alpha, 
-            k_ptr + kv_h * head_dim, nkv_head * head_dim, 
-            q_ptr + h * head_dim, 1, &beta, scores_dev + h * seq_len, 1);
+    // When computeType is CUBLAS_COMPUTE_32F, alpha/beta MUST be float pointers 
+    // regardless of the input/output matrix types.
+    float alpha = 1.0f, beta = 0.0f;
+
+    T* scores_dev;
+    cudaMalloc(&scores_dev, nhead * q_len * kv_len * sizeof(T));
+
+    /* STEP 1: Q @ K^T */
+    for (int g = 0; g < nkvh; ++g) {
+        int heads_per_group = nhead / nkvh;
+        cublasGemmStridedBatchedEx(handle.get(),
+            CUBLAS_OP_T, CUBLAS_OP_N, 
+            kv_len, q_len, head_dim,
+            &alpha,
+            (const void*)((T*)k->data() + (g * head_dim)), CudaType, nkvh * head_dim, 0, 
+            (const void*)((T*)q->data() + (g * heads_per_group * head_dim)), CudaType, nhead * head_dim, head_dim,
+            &beta,
+            (void*)(scores_dev + (g * heads_per_group * q_len * kv_len)), CudaType, kv_len, q_len * kv_len,
+            heads_per_group,
+            CUBLAS_COMPUTE_32F,
+            CUBLAS_GEMM_DEFAULT);
     }
-    
-    // Softmax
-    int threads = 256;
-    int blocks = (nhead + threads - 1) / threads;
-    softmax_kernel<float><<<blocks, threads>>>(scores_dev, nhead, seq_len);
-    
-    // Scores * V
-    for (int h = 0; h < nhead; ++h) {
-        int kv_h = h / group_size;
-        cublasSgemv(handle.get(), CUBLAS_OP_N, head_dim, seq_len, &one, 
-            v_ptr + kv_h * head_dim, nkv_head * head_dim, 
-            scores_dev + h * seq_len, 1, &zero, out_ptr + h * head_dim, 1);
+
+    dim3 threads(32);
+    dim3 blocks((q_len + 31) / 32, nhead);
+    attention_softmax_kernel<T><<<blocks, threads>>>(scores_dev, q_len, kv_len, nhead, scale);
+
+    /* STEP 3: Scores @ V */
+    for (int g = 0; g < nkvh; ++g) {
+        int heads_per_group = nhead / nkvh;
+        cublasGemmStridedBatchedEx(handle.get(),
+            CUBLAS_OP_N, CUBLAS_OP_N,
+            head_dim, q_len, kv_len,
+            &alpha,
+            (const void*)((T*)v->data() + (g * head_dim)), CudaType, nkvh * head_dim, 0,
+            (const void*)(scores_dev + (g * heads_per_group * q_len * kv_len)), CudaType, kv_len, q_len * kv_len,
+            &beta,
+            (void*)((T*)attn_val->data() + (g * heads_per_group * head_dim)), CudaType, nhead * head_dim, head_dim,
+            heads_per_group,
+            CUBLAS_COMPUTE_32F,
+            CUBLAS_GEMM_DEFAULT);
     }
-    
+
     cudaFree(scores_dev);
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) throw std::runtime_error("Kernel launch failed");
+    cudaDeviceSynchronize();
 }
+
+void self_attention(tensor_t attn_val, tensor_t q, tensor_t k, tensor_t v, float scale) {
+    // You will need to map this to however llaisys checks tensor dtypes.
+    // Example uses a hypothetical `dtype()` string/enum:
+    
+    llaisysDataType_t dtype = q->dtype();
+
+    if (dtype == LLAISYS_DTYPE_F32) {
+        self_attention_impl<float, CUDA_R_32F>(attn_val, q, k, v, scale);
+    } else if (dtype == LLAISYS_DTYPE_F16) {
+        self_attention_impl<half, CUDA_R_16F>(attn_val, q, k, v, scale);
+    } else if (dtype == LLAISYS_DTYPE_BF16) {
+        self_attention_impl<__nv_bfloat16, CUDA_R_16BF>(attn_val, q, k, v, scale);
+    } else {
+        throw std::runtime_error("Unsupported dtype for self_attention");
+    }
+}
+
 }

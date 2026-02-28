@@ -38,6 +38,8 @@ def main():
 
         if result.returncode == 0:
             print("\033[92mPASSED\033[0m")
+            if args.profile:
+                print(f"Output for {test_name}:\n{result.stdout}")
             passed_tests.append(test_name)
         else:
             print("\033[91mFAILED\033[0m")
