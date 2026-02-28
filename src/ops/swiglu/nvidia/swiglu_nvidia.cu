@@ -1,5 +1,7 @@
 #include "swiglu_nvidia.hpp"
 #include <cuda_runtime.h>
+#include <cuda_fp16.h>
+#include <cuda_bf16.h>
 #include <stdexcept>
 #include <cmath>
 
@@ -23,8 +25,12 @@ void swiglu(tensor_t out, tensor_t gate, tensor_t up) {
     
     if (out->dtype() == LLAISYS_DTYPE_F32) {
         swiglu_kernel<float><<<blocks, threads>>>((float*)out->data(), (const float*)gate->data(), (const float*)up->data(), size);
+    } else if (out->dtype() == LLAISYS_DTYPE_F16) {
+        swiglu_kernel<half><<<blocks, threads>>>((half*)out->data(), (const half*)gate->data(), (const half*)up->data(), size);
+    } else if (out->dtype() == LLAISYS_DTYPE_BF16) {
+        swiglu_kernel<__nv_bfloat16><<<blocks, threads>>>((__nv_bfloat16*)out->data(), (const __nv_bfloat16*)gate->data(), (const __nv_bfloat16*)up->data(), size);
     } else {
-        throw std::runtime_error("SwiGLU NVIDIA: Only F32 supported");
+        throw std::runtime_error("SwiGLU NVIDIA: Unsupported data type");
     }
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) throw std::runtime_error("Kernel launch failed");

@@ -1,5 +1,7 @@
 #include "rms_norm_nvidia.hpp"
 #include <cuda_runtime.h>
+#include <cuda_fp16.h>
+#include <cuda_bf16.h>
 #include <stdexcept>
 
 namespace llaisys::ops::nvidia {
@@ -45,8 +47,12 @@ void rms_norm(tensor_t out, tensor_t in, tensor_t weight, float eps) {
 
     if (out->dtype() == LLAISYS_DTYPE_F32) {
         rms_norm_kernel<float><<<blocks, threads, smem>>>((float*)out->data(), (const float*)in->data(), (const float*)weight->data(), eps, D);
+    } else if (out->dtype() == LLAISYS_DTYPE_F16) {
+        rms_norm_kernel<half><<<blocks, threads, smem>>>((half*)out->data(), (const half*)in->data(), (const half*)weight->data(), eps, D);
+    } else if (out->dtype() == LLAISYS_DTYPE_BF16) {
+        rms_norm_kernel<__nv_bfloat16><<<blocks, threads, smem>>>((__nv_bfloat16*)out->data(), (const __nv_bfloat16*)in->data(), (const __nv_bfloat16*)weight->data(), eps, D);
     } else {
-        throw std::runtime_error("RMSNorm NVIDIA: Only F32 supported");
+        throw std::runtime_error("RMSNorm NVIDIA: Unsupported data type");
     }
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) throw std::runtime_error("Kernel launch failed");

@@ -1,5 +1,7 @@
 #include "rope_nvidia.hpp"
 #include <cuda_runtime.h>
+#include <cuda_fp16.h>
+#include <cuda_bf16.h>
 #include <stdexcept>
 
 namespace llaisys::ops::nvidia {
@@ -46,8 +48,12 @@ void rope(tensor_t out, tensor_t in, tensor_t pos_ids, float theta) {
     
     if (out->dtype() == LLAISYS_DTYPE_F32) {
         rope_kernel<float><<<blocks, threads>>>((float*)out->data(), (const float*)in->data(), (const int64_t*)pos_ids->data(), theta, nhead, head_dim, seq_len);
+    } else if (out->dtype() == LLAISYS_DTYPE_F16) {
+        rope_kernel<half><<<blocks, threads>>>((half*)out->data(), (const half*)in->data(), (const int64_t*)pos_ids->data(), theta, nhead, head_dim, seq_len);
+    } else if (out->dtype() == LLAISYS_DTYPE_BF16) {
+        rope_kernel<__nv_bfloat16><<<blocks, threads>>>((__nv_bfloat16*)out->data(), (const __nv_bfloat16*)in->data(), (const int64_t*)pos_ids->data(), theta, nhead, head_dim, seq_len);
     } else {
-        throw std::runtime_error("RoPE NVIDIA: Only F32 supported");
+        throw std::runtime_error("RoPE NVIDIA: Unsupported data type");
     }
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) throw std::runtime_error("Kernel launch failed");

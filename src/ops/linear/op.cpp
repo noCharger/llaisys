@@ -92,10 +92,9 @@ void linear(tensor_t out, tensor_t in, tensor_t weight, tensor_t bias) {
         break;
         
 #ifdef ENABLE_NVIDIA_API
-    if (out->deviceType() == LLAISYS_DEVICE_NVIDIA) {
+    case LLAISYS_DEVICE_NVIDIA:
         nvidia::linear(out, in, weight, bias);
         return;
-    }
 #endif
         
     default:
