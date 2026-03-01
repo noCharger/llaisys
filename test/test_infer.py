@@ -91,6 +91,7 @@ if __name__ == "__main__":
     parser.add_argument("--test", action="store_true")
     parser.add_argument("--benchmark", action="store_true", help="Run latency benchmark")
     parser.add_argument("--repeat", default=10, type=int, help="Number of repeats for benchmark")
+    parser.add_argument("--profile", action="store_true", help="Show e2e inference time profile")
 
     args = parser.parse_args()
 
@@ -101,6 +102,8 @@ if __name__ == "__main__":
     tokenizer, model, model_path = load_hf_model(args.model, args.device)
 
     # Example prompt
+    if args.device == "nvidia":
+        torch.cuda.synchronize()
     start_time = time.time()
     tokens, output = hf_infer(
         args.prompt,
@@ -111,7 +114,10 @@ if __name__ == "__main__":
         top_k=top_k,
         temperature=temperature,
     )
+    if args.device == "nvidia":
+        torch.cuda.synchronize()
     end_time = time.time()
+    hf_duration = end_time - start_time
 
     del model
     gc.collect()
@@ -122,9 +128,11 @@ if __name__ == "__main__":
     print("\nContents:")
     print(output)
     print("\n")
-    print(f"Time elapsed: {(end_time - start_time):.2f}s\n")
+    print(f"Time elapsed: {hf_duration:.2f}s\n")
 
     model = load_llaisys_model(model_path, args.device)
+    if args.device == "nvidia":
+        torch.cuda.synchronize()
     start_time = time.time()
     llaisys_tokens, llaisys_output = llaisys_infer(
         args.prompt,
@@ -135,8 +143,10 @@ if __name__ == "__main__":
         top_k=top_k,
         temperature=temperature,
     )
-
+    if args.device == "nvidia":
+        torch.cuda.synchronize()
     end_time = time.time()
+    llaisys_duration = end_time - start_time
 
     print("\n=== Your Result ===\n")
     print("Tokens:")
@@ -144,7 +154,12 @@ if __name__ == "__main__":
     print("\nContents:")
     print(llaisys_output)
     print("\n")
-    print(f"Time elapsed: {(end_time - start_time):.2f}s\n")
+    print(f"Time elapsed: {llaisys_duration:.2f}s\n")
+
+    if args.profile:
+        print("\n=== Profile ===\n")
+        print(f"HF E2E Inference Time: {hf_duration:.4f}s")
+        print(f"Llaisys E2E Inference Time: {llaisys_duration:.4f}s")
 
     if args.benchmark:
         print("\n=== Benchmarking ===\n")
