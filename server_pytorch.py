@@ -37,6 +37,11 @@ def load_model(model_path: str, device: str, max_steps: int = 512) -> None:
     """Loads the PyTorch model and tokenizer."""
     logger.info(f"Loading PyTorch model from {model_path} on {device}...")
     state.model_path = model_path
+    
+    # Map 'nvidia' to 'cuda' for PyTorch
+    if device == "nvidia":
+        device = "cuda"
+        
     state.device = device
     state.max_steps = max_steps
     
@@ -53,7 +58,8 @@ def load_model(model_path: str, device: str, max_steps: int = 512) -> None:
             model_path,
             torch_dtype=torch_dtype,
             device_map=device,
-            trust_remote_code=True
+            trust_remote_code=True,
+            low_cpu_mem_usage=True
         )
         logger.info("PyTorch model loaded successfully.")
     except Exception as e:
