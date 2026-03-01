@@ -32,30 +32,30 @@ class TestPortAndConnection(unittest.TestCase):
         # Test case 1: --pytorch-model present, no port
         args = parser.parse_args(["--pytorch-model"])
         if args.port is None:
-            args.port = 8002 if args.pytorch_model else 8000
-        self.assertEqual(args.port, 8002)
+            args.port = 6008 if args.pytorch_model else 8000
+        self.assertEqual(args.port, 6008)
         
         # Test case 2: no flag, no port
         args = parser.parse_args([])
         if args.port is None:
-            args.port = 8002 if args.pytorch_model else 8000
+            args.port = 6008 if args.pytorch_model else 8000
         self.assertEqual(args.port, 8000)
         
         # Test case 3: explicit port
         args = parser.parse_args(["--port", "9000"])
         if args.port is None:
-            args.port = 8002 if args.pytorch_model else 8000
+            args.port = 6008 if args.pytorch_model else 8000
         self.assertEqual(args.port, 9000)
 
     @patch('requests.get')
     def test_frontend_config_endpoint(self, mock_get):
         # Default behavior
-        api_url = os.environ.get('API_URL', 'http://localhost:8002')
-        self.assertEqual(api_url, 'http://localhost:8002')
+        api_url = os.environ.get('API_URL', 'http://localhost:6008')
+        self.assertEqual(api_url, 'http://localhost:6008')
         
         # With Env Var
         with patch.dict(os.environ, {'API_URL': 'http://custom:1234'}):
-            api_url = os.environ.get('API_URL', 'http://localhost:8002')
+            api_url = os.environ.get('API_URL', 'http://localhost:6008')
             self.assertEqual(api_url, 'http://custom:1234')
 
     def test_cors_middleware_presence(self):

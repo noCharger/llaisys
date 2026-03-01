@@ -62,6 +62,8 @@ class ServerState:
 
 state = ServerState()
 
+from dataclasses import dataclass, field
+
 # --- Helper Functions ---
 
 def load_model() -> None:
@@ -75,11 +77,11 @@ def load_model() -> None:
     state.tokenizer = AutoTokenizer.from_pretrained(state.model_path, trust_remote_code=True)
     logger.info("Model loaded successfully.")
 
-# Improved Session Management with History
+@dataclass
 class SessionMeta:
     session_ptr: Any
-    history_ids: List[int]
-    last_accessed: float
+    history_ids: List[int] = field(default_factory=list)
+    last_accessed: float = 0.0
 
 session_store: Dict[str, SessionMeta] = {}
 
@@ -109,38 +111,62 @@ def smart_session_match(input_ids: List[int]) -> tuple[str, SessionMeta, int]:
     
     return None, None, 0
 
-def get_session_for_request(input_ids: List[int]) -> tuple[SessionMeta, int]:
-    """Retrieves or creates a session based on input prefix matching."""
-    # 1. Find a session with prefix match
-    sid, meta, match_len = smart_session_match(input_ids)
+def get_session_for_request(input_ids: List[int], session_id: Optional[str] = None) -> tuple[SessionMeta, int]:
+    """Retrieves or creates a session based on input prefix matching or explicit session_id."""
     
-    if meta and match_len > 0:
+    # 0. Explicit Session ID
+    if session_id and session_id in session_store:
+        meta = session_store[session_id]
+        # Calculate match length with existing history
+        match_len = 0
+        min_len = min(len(meta.history_ids), len(input_ids))
+        for i in range(min_len):
+            if meta.history_ids[i] == input_ids[i]:
+                match_len += 1
+            else:
+                break
+        
         if match_len < len(meta.history_ids):
-            logger.info(f"Rewinding session {sid} from {len(meta.history_ids)} to {match_len}")
+            logger.info(f"Rewinding session {session_id} from {len(meta.history_ids)} to {match_len}")
             state.model.rewind_session(meta.session_ptr, match_len)
             meta.history_ids = meta.history_ids[:match_len]
-        
+            
         meta.last_accessed = time.time()
         return meta, match_len
+
+    # 1. Try to find a session with prefix match (only if no explicit session_id or not found)
+    if not session_id:
+        sid, meta, match_len = smart_session_match(input_ids)
+        
+        if meta and match_len > 0:
+            if match_len < len(meta.history_ids):
+                logger.info(f"Rewinding session {sid} from {len(meta.history_ids)} to {match_len}")
+                state.model.rewind_session(meta.session_ptr, match_len)
+                meta.history_ids = meta.history_ids[:match_len]
+            
+            meta.last_accessed = time.time()
+            return meta, match_len
     
     # 2. No suitable match, create new or recycle LRU
     if len(session_store) >= state.max_sessions:
         oldest_sid = min(session_store, key=lambda k: session_store[k].last_accessed)
         logger.info(f"Recycling session {oldest_sid}")
         meta = session_store[oldest_sid]
+        
+        if session_id:
+            del session_store[oldest_sid]
+            session_store[session_id] = meta
+        
         state.model.rewind_session(meta.session_ptr, 0)
         meta.history_ids = []
         meta.last_accessed = time.time()
         return meta, 0
     
     # 3. Create new session
-    new_sid = str(uuid.uuid4())
+    new_sid = session_id if session_id else str(uuid.uuid4())
     logger.info(f"Creating new session {new_sid}")
     ptr = state.model.create_session()
-    meta = SessionMeta()
-    meta.session_ptr = ptr
-    meta.history_ids = []
-    meta.last_accessed = time.time()
+    meta = SessionMeta(session_ptr=ptr, history_ids=[], last_accessed=time.time())
     session_store[new_sid] = meta
     return meta, 0
 
@@ -213,7 +239,6 @@ async def chat_completions(request: ChatCompletionRequest):
     if not state.model:
         raise HTTPException(status_code=500, detail="Model not loaded")
 
-    # 1. Prepare Prompt
     prompt = state.tokenizer.apply_chat_template(
         conversation=[m.model_dump() for m in request.messages],
         add_generation_prompt=True,
@@ -222,12 +247,10 @@ async def chat_completions(request: ChatCompletionRequest):
     
     input_ids = state.tokenizer.encode(prompt)
     
-    # 2. Session Management
-    session_meta, match_len = get_session_for_request(input_ids)
+    session_meta, match_len = get_session_for_request(input_ids, session_id=request.session_id)
     new_input_ids = input_ids[match_len:]
     session_meta.history_ids.extend(new_input_ids)
     
-    # 3. Generation Logic
     generation_max_tokens = request.max_tokens
     if generation_max_tokens == 512 and state.max_steps != 512:
          generation_max_tokens = state.max_steps
@@ -337,9 +360,8 @@ if __name__ == "__main__":
     parser.add_argument("--max-steps", type=int, default=10, help="Max generation steps")
     args = parser.parse_args()
 
-    # Set default port
     if args.port is None:
-        args.port = 8002 if args.pytorch_model else 8000
+        args.port = 6008 if args.pytorch_model else 8000
 
     # Download model if needed
     if not os.path.exists(args.model) and not os.path.isdir(args.model):

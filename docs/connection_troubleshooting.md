@@ -6,9 +6,9 @@ This document outlines how the frontend (Node.js/Browser) connects to the backen
 
 *   **Backend**: A FastAPI server running `server.py`.
     *   **Default Mode (`llaisys`)**: Runs on `http://localhost:8000`.
-    *   **PyTorch Mode (`--pytorch-model`)**: Runs on `http://localhost:8002` by default.
+    *   **PyTorch Mode (`--pytorch-model`)**: Runs on `http://localhost:6008` by default.
 *   **Frontend Server**: A Node.js Express server running `frontend/server.js`.
-    *   Runs on `http://localhost:3000` by default.
+    *   Runs on `http://localhost:6006` by default.
     *   Serves static assets (`index.html`, `app.js`).
     *   Provides a `/config` endpoint to tell the browser where the backend is.
 *   **Frontend Client**: Browser-based JavaScript (`app.js`).
@@ -31,7 +31,7 @@ python server.py --model path/to/model --pytorch-model --port 9000
 The frontend determines the backend URL via the `API_URL` environment variable or a `.env` file.
 
 **Default Behavior:**
-If no configuration is provided, the frontend assumes the backend is at `http://localhost:8002` (the PyTorch default).
+If no configuration is provided, the frontend assumes the backend is at `http://localhost:6008` (the PyTorch default).
 
 **Configuration Methods:**
 
@@ -43,8 +43,8 @@ If no configuration is provided, the frontend assumes the backend is at `http://
 2.  **Configuration File (.env)**:
     Create a `.env` file in the `frontend/` directory (see `.env.example`):
     ```ini
-    PORT=3000
-    API_URL=http://localhost:8002
+    PORT=6006
+    API_URL=http://localhost:6008
     ```
 
 ## Troubleshooting Connection Issues
@@ -54,7 +54,7 @@ If the frontend cannot connect to the backend ("Connection Error" or stuck "Thin
 1.  **Check Backend Status**:
     *   Ensure the python server is running.
     *   Verify the port it is listening on (look for `Uvicorn running on http://0.0.0.0:XXXX` in the logs).
-    *   If using `--pytorch-model`, the default is **8002**.
+    *   If using `--pytorch-model`, the default is **6008**.
     *   If using standard mode, the default is **8000**.
 
 2.  **Check Frontend Configuration**:

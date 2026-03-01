@@ -25,7 +25,7 @@ describe('Configuration Tests', () => {
         
         const res = await request(server).get('/config');
         expect(res.statusCode).toBe(200);
-        expect(res.body.apiUrl).toBe('http://localhost:8002');
+        expect(res.body.apiUrl).toMatch(/http:\/\/(localhost|127\.0\.0\.1):6008/);
     });
 
     test('should use configured API URL when API_URL is set', async () => {

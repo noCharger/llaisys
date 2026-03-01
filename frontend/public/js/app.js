@@ -35,6 +35,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         return div;
     }
 
+    // Generate a unique session ID
+    const sessionId = 'session-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now();
+
     chatForm.addEventListener('submit', async (e) => {
         e.preventDefault();
         const text = userInput.value.trim();
@@ -57,7 +60,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     model: 'qwen2',
                     messages: history,
                     stream: true,
-                    temperature: 0.7
+                    temperature: 0.7,
+                    session_id: sessionId
                 })
             });
 
