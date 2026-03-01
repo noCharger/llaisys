@@ -40,7 +40,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         const text = userInput.value.trim();
         if (!text) return;
 
-        // User Message
         appendMessage('user', text);
         userInput.value = '';
         history.push({ role: 'user', content: text });
@@ -62,35 +61,37 @@ document.addEventListener('DOMContentLoaded', async () => {
                 })
             });
 
-            if (!response.ok) throw new Error('API Error');
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`API Error: ${response.status} ${response.statusText} - ${errorText}`);
+            }
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
+            
+            // Remove thinking indicator immediately on first successful response
+            thinkingIndicator.remove();
+            aiMsgDiv = appendMessage('assistant', '');
 
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
                 
-                const chunk = decoder.decode(value);
+                const chunk = decoder.decode(value, { stream: true });
                 const lines = chunk.split('\n');
                 
                 for (const line of lines) {
                     if (line.startsWith('data: ')) {
-                        const jsonStr = line.substring(6);
+                        const jsonStr = line.substring(6).trim();
                         if (jsonStr === '[DONE]') break;
                         try {
                             const data = JSON.parse(jsonStr);
                             const delta = data.choices[0].delta.content || '';
-                            aiText += delta;
-                            
-                            // Initialize message div on first content
-                            if (!aiMsgDiv) {
-                                thinkingIndicator.remove();
-                                aiMsgDiv = appendMessage('assistant', '');
+                            if (delta) {
+                                aiText += delta;
+                                aiMsgDiv.textContent = aiText;
+                                chatContainer.scrollTop = chatContainer.scrollHeight;
                             }
-                            
-                            aiMsgDiv.textContent = aiText;
-                            chatContainer.scrollTop = chatContainer.scrollHeight;
                         } catch (e) {
                             // ignore parse errors for partial chunks
                         }
@@ -104,7 +105,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         } catch (err) {
             thinkingIndicator.remove();
-            appendMessage('assistant', `Error: ${err.message}`);
+            console.error("Connection Error:", err);
+            appendMessage('assistant', `Connection Error: Failed to reach backend at ${API_URL}. Please ensure the server is running on port 8002 (or configured port) and bound to 0.0.0.0 or localhost. Details: ${err.message}`);
         }
     });
 });

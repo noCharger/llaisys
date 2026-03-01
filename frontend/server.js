@@ -1,10 +1,11 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const API_URL = process.env.API_URL || 'http://localhost:8001';
+const API_URL = process.env.API_URL || 'http://localhost:8002';
 
 // Middleware
 app.use(cors());
@@ -26,7 +27,9 @@ app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
     console.log(`Frontend Server running on http://localhost:${PORT}`);
     console.log(`Configured Backend API URL: ${API_URL}`);
 });
+
+module.exports = server;
