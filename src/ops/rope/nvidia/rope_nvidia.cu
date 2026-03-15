@@ -14,6 +14,7 @@ __global__ void rope_kernel(T* out, const T* in, const int64_t* pos_ids, float t
     
     if (idx >= total_pairs) return;
 
+    // Decompose flat index to [seq, head, dim/2]
     int d = idx % half_dim;
     int rem = idx / half_dim;
     int h = rem % nhead;
@@ -27,6 +28,7 @@ __global__ void rope_kernel(T* out, const T* in, const int64_t* pos_ids, float t
     float x2 = static_cast<float>(in[i2]);
     
     int pos = pos_ids[s];
+    // TODO: Precompute inverse frequencies to remove powf from the kernel hot path.
     float freq = 1.0f / powf(theta, (float)(2 * d) / head_dim);
     float alpha = (float)pos * freq;
     
@@ -42,19 +44,24 @@ void rope(tensor_t out, tensor_t in, tensor_t pos_ids, float theta) {
     int nhead = in->shape()[1];
     int head_dim = in->shape()[2];
     
+    // TODO: Tune launch configuration based on specific seq_len/nhead/head_dim shapes.
     int total_pairs = seq_len * nhead * head_dim / 2;
-    int threads = 256;
+    constexpr int threads = 256;
     int blocks = (total_pairs + threads - 1) / threads;
     
     auto dtype = out->dtype();
-    if (dtype == LLAISYS_DTYPE_F32) {
-        rope_kernel<float><<<blocks, threads>>>((float*)out->data(), (const float*)in->data(), (const int64_t*)pos_ids->data(), theta, nhead, head_dim, seq_len);
-    } else if (dtype == LLAISYS_DTYPE_F16) {
-        rope_kernel<half><<<blocks, threads>>>((half*)out->data(), (const half*)in->data(), (const int64_t*)pos_ids->data(), theta, nhead, head_dim, seq_len);
-    } else if (dtype == LLAISYS_DTYPE_BF16) {
-        rope_kernel<__nv_bfloat16><<<blocks, threads>>>((__nv_bfloat16*)out->data(), (const __nv_bfloat16*)in->data(), (const int64_t*)pos_ids->data(), theta, nhead, head_dim, seq_len);
-    } else {
-        throw std::runtime_error("RoPE NVIDIA: Unsupported data type");
+    switch (dtype) {
+        case LLAISYS_DTYPE_F32:
+            rope_kernel<float><<<blocks, threads>>>((float*)out->data(), (const float*)in->data(), (const int64_t*)pos_ids->data(), theta, nhead, head_dim, seq_len);
+            break;
+        case LLAISYS_DTYPE_F16:
+            rope_kernel<half><<<blocks, threads>>>((half*)out->data(), (const half*)in->data(), (const int64_t*)pos_ids->data(), theta, nhead, head_dim, seq_len);
+            break;
+        case LLAISYS_DTYPE_BF16:
+            rope_kernel<__nv_bfloat16><<<blocks, threads>>>((__nv_bfloat16*)out->data(), (const __nv_bfloat16*)in->data(), (const int64_t*)pos_ids->data(), theta, nhead, head_dim, seq_len);
+            break;
+        default:
+            throw std::runtime_error("RoPE NVIDIA: Unsupported data type");
     }
     
     if (cudaGetLastError() != cudaSuccess) {

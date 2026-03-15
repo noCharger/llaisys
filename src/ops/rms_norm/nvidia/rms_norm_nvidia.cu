@@ -36,20 +36,26 @@ __global__ void rms_norm_kernel(T* out, const T* in, const T* weight, float eps,
 }
 
 void rms_norm(tensor_t out, tensor_t in, tensor_t weight, float eps) {
-    int N = in->shape()[0];
+    int N = in->shape()[0]; // N rows, one block per row
     int D = in->shape()[1];
-    int threads = 256;
+    
+    // TODO: Vectorize input loads and weight reads for cache efficiency.
+    constexpr int threads = 256;
     size_t smem = threads * sizeof(float);
     
     auto dtype = out->dtype();
-    if (dtype == LLAISYS_DTYPE_F32) {
-        rms_norm_kernel<float><<<N, threads, smem>>>((float*)out->data(), (const float*)in->data(), (const float*)weight->data(), eps, D);
-    } else if (dtype == LLAISYS_DTYPE_F16) {
-        rms_norm_kernel<half><<<N, threads, smem>>>((half*)out->data(), (const half*)in->data(), (const half*)weight->data(), eps, D);
-    } else if (dtype == LLAISYS_DTYPE_BF16) {
-        rms_norm_kernel<__nv_bfloat16><<<N, threads, smem>>>((__nv_bfloat16*)out->data(), (const __nv_bfloat16*)in->data(), (const __nv_bfloat16*)weight->data(), eps, D);
-    } else {
-        throw std::runtime_error("RMSNorm NVIDIA: Unsupported data type");
+    switch (dtype) {
+        case LLAISYS_DTYPE_F32:
+            rms_norm_kernel<float><<<N, threads, smem>>>((float*)out->data(), (const float*)in->data(), (const float*)weight->data(), eps, D);
+            break;
+        case LLAISYS_DTYPE_F16:
+            rms_norm_kernel<half><<<N, threads, smem>>>((half*)out->data(), (const half*)in->data(), (const half*)weight->data(), eps, D);
+            break;
+        case LLAISYS_DTYPE_BF16:
+            rms_norm_kernel<__nv_bfloat16><<<N, threads, smem>>>((__nv_bfloat16*)out->data(), (const __nv_bfloat16*)in->data(), (const __nv_bfloat16*)weight->data(), eps, D);
+            break;
+        default:
+            throw std::runtime_error("RMSNorm NVIDIA: Unsupported data type");
     }
     
     if (cudaGetLastError() != cudaSuccess) {

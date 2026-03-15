@@ -21,6 +21,7 @@ __global__ void argmax_kernel_single_block(T* out_val, int64_t* out_idx, const T
         }
     }
     
+    // TODO: Use dynamic shared memory sized to blockDim.x instead of hardcoded 1024.
     __shared__ float s_val[1024];
     __shared__ int s_idx[1024];
     
@@ -46,17 +47,24 @@ __global__ void argmax_kernel_single_block(T* out_val, int64_t* out_idx, const T
 
 void argmax(tensor_t max_val, tensor_t max_idx, tensor_t in) {
     int size = in->numel();
-    int threads = 1024;
+    
+    // TODO: Implement a staged multi-block reduction path for large tensors.
+    constexpr int threads = 1024;
     
     auto dtype = in->dtype();
-    if (dtype == LLAISYS_DTYPE_F32) {
-        argmax_kernel_single_block<float><<<1, threads>>>((float*)max_val->data(), (int64_t*)max_idx->data(), (const float*)in->data(), size);
-    } else if (dtype == LLAISYS_DTYPE_F16) {
-        argmax_kernel_single_block<half><<<1, threads>>>((half*)max_val->data(), (int64_t*)max_idx->data(), (const half*)in->data(), size);
-    } else if (dtype == LLAISYS_DTYPE_BF16) {
-        argmax_kernel_single_block<__nv_bfloat16><<<1, threads>>>((__nv_bfloat16*)max_val->data(), (int64_t*)max_idx->data(), (const __nv_bfloat16*)in->data(), size);
-    } else {
-        throw std::runtime_error("Argmax NVIDIA: Unsupported data type");
+    
+    switch(dtype) {
+        case LLAISYS_DTYPE_F32:
+            argmax_kernel_single_block<float><<<1, threads>>>((float*)max_val->data(), (int64_t*)max_idx->data(), (const float*)in->data(), size);
+            break;
+        case LLAISYS_DTYPE_F16:
+            argmax_kernel_single_block<half><<<1, threads>>>((half*)max_val->data(), (int64_t*)max_idx->data(), (const half*)in->data(), size);
+            break;
+        case LLAISYS_DTYPE_BF16:
+            argmax_kernel_single_block<__nv_bfloat16><<<1, threads>>>((__nv_bfloat16*)max_val->data(), (int64_t*)max_idx->data(), (const __nv_bfloat16*)in->data(), size);
+            break;
+        default:
+            throw std::runtime_error("Argmax NVIDIA: Unsupported data type");
     }
     
     if (cudaGetLastError() != cudaSuccess) {

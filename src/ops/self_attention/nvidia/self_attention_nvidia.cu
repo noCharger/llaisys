@@ -6,20 +6,15 @@
 #include <stdexcept>
 #include <cmath>
 #include <float.h>
+#include "utils/cuda_check.cuh"
 
 namespace llaisys::ops::nvidia {
-
-class CublasHandle {
-public:
-    CublasHandle() { cublasCreate(&handle_); }
-    ~CublasHandle() { cublasDestroy(handle_); }
-    cublasHandle_t get() { return handle_; }
-private:
-    cublasHandle_t handle_;
-};
+using namespace llaisys::utils;
 
 template <typename T>
 __global__ void attention_softmax_kernel(T* scores, int q_len, int kv_len, int nhead, float scale) {
+    // 3-pass softmax implementation
+    // TODO: Fuse into online softmax to reduce global memory traffic
     int h = blockIdx.y; 
     int q_idx = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -61,16 +56,16 @@ void self_attention_impl(tensor_t attn_val, tensor_t q, tensor_t k, tensor_t v, 
     int kv_len = k->shape()[0];
     int nkvh = k->shape()[1];
     
-    CublasHandle handle;
+    cublasHandle_t handle = get_cublas_handle();
     float alpha = 1.0f, beta = 0.0f;
 
-    T* scores_dev;
-    cudaMalloc(&scores_dev, nhead * q_len * kv_len * sizeof(T));
+    size_t scores_size = nhead * q_len * kv_len * sizeof(T);
+    T* scores_dev = static_cast<T*>(get_scratch_buffer(scores_size));
 
     // Q * K^T
     for (int g = 0; g < nkvh; ++g) {
         int heads_per_group = nhead / nkvh;
-        cublasGemmStridedBatchedEx(handle.get(),
+        cublasGemmStridedBatchedEx(handle,
             CUBLAS_OP_T, CUBLAS_OP_N, 
             kv_len, q_len, head_dim,
             &alpha,
@@ -90,7 +85,7 @@ void self_attention_impl(tensor_t attn_val, tensor_t q, tensor_t k, tensor_t v, 
     // Scores * V
     for (int g = 0; g < nkvh; ++g) {
         int heads_per_group = nhead / nkvh;
-        cublasGemmStridedBatchedEx(handle.get(),
+        cublasGemmStridedBatchedEx(handle,
             CUBLAS_OP_N, CUBLAS_OP_N,
             head_dim, q_len, kv_len,
             &alpha,
@@ -102,21 +97,23 @@ void self_attention_impl(tensor_t attn_val, tensor_t q, tensor_t k, tensor_t v, 
             CUBLAS_COMPUTE_32F,
             CUBLAS_GEMM_DEFAULT);
     }
-
-    cudaFree(scores_dev);
 }
 
 void self_attention(tensor_t attn_val, tensor_t q, tensor_t k, tensor_t v, float scale) {
     auto dtype = q->dtype();
 
-    if (dtype == LLAISYS_DTYPE_F32) {
-        self_attention_impl<float, CUDA_R_32F>(attn_val, q, k, v, scale);
-    } else if (dtype == LLAISYS_DTYPE_F16) {
-        self_attention_impl<half, CUDA_R_16F>(attn_val, q, k, v, scale);
-    } else if (dtype == LLAISYS_DTYPE_BF16) {
-        self_attention_impl<__nv_bfloat16, CUDA_R_16BF>(attn_val, q, k, v, scale);
-    } else {
-        throw std::runtime_error("Unsupported dtype for self_attention");
+    switch (dtype) {
+        case LLAISYS_DTYPE_F32:
+            self_attention_impl<float, CUDA_R_32F>(attn_val, q, k, v, scale);
+            break;
+        case LLAISYS_DTYPE_F16:
+            self_attention_impl<half, CUDA_R_16F>(attn_val, q, k, v, scale);
+            break;
+        case LLAISYS_DTYPE_BF16:
+            self_attention_impl<__nv_bfloat16, CUDA_R_16BF>(attn_val, q, k, v, scale);
+            break;
+        default:
+            throw std::runtime_error("Unsupported dtype for self_attention");
     }
 }
 
