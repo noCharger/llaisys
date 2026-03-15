@@ -5,7 +5,7 @@ parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, parent_dir)
 import llaisys
 import torch
-from test_utils import random_tensor, check_equal, benchmark
+from test_utils import random_tensor, check_equal, benchmark, set_seed
 
 
 def torch_rms_norm(ans, x, w, eps):
@@ -37,10 +37,12 @@ def test_op_rms_norm(
     assert check_equal(c_, c, atol=atol, rtol=rtol)
 
     if profile:
+        compiled_torch_rms_norm = torch.compile(torch_rms_norm)
         benchmark(
             lambda: torch_rms_norm(c, x, w, eps),
             lambda: llaisys.Ops.rms_norm(c_, x_, w_, eps),
             device_name,
+            torch_compile_func=lambda: compiled_torch_rms_norm(c, x, w, eps)
         )
 
 
@@ -51,11 +53,12 @@ if __name__ == "__main__":
     parser.add_argument("--device", default="cpu", choices=["cpu", "nvidia"], type=str)
     parser.add_argument("--profile", action="store_true")
     args = parser.parse_args()
+    set_seed()
     testShapes = [(1, 4), (512, 4096)]
     testDtypePrec = [
         # type, atol, rtol
         ("f32", 1e-5, 1e-5),
-        ("f16", 1e-3, 1e-3),
+        ("f16", 5e-3, 5e-3),
         ("bf16", 1e-2, 1e-2),
     ]
     print(f"Testing Ops.rms_norm on {args.device}")

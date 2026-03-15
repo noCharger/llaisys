@@ -31,10 +31,12 @@ def test_op_swiglu(
     assert check_equal(out_, out, atol=atol, rtol=rtol)
 
     if profile:
+        compiled_torch_swiglu = torch.compile(torch_swiglu)
         benchmark(
             lambda: torch_swiglu(out, gate, up),
             lambda: llaisys.Ops.swiglu(out_, gate_, up_),
             device_name,
+            torch_compile_func=lambda: compiled_torch_swiglu(out, gate, up)
         )
 
 

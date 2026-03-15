@@ -2,6 +2,10 @@
 #include "../common.hpp"
 #include <cmath>
 
+#ifdef ENABLE_NVIDIA_API
+#include "nvidia/rope_nvidia.hpp"
+#endif
+
 namespace llaisys::ops {
 namespace {
 
@@ -110,7 +114,7 @@ void rope(tensor_t out, tensor_t in, tensor_t pos_ids, float theta) {
 
 #ifdef ENABLE_NVIDIA_API
     if (out->deviceType() == LLAISYS_DEVICE_NVIDIA) {
-        TO_BE_IMPLEMENTED();
+        nvidia::rope(out, in, pos_ids, theta);
         return;
     }
 #endif

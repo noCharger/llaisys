@@ -28,10 +28,12 @@ def test_op_embedding(
     check_equal(out_, out, strict=True)
 
     if profile:
+        compiled_torch_embedding = torch.compile(torch_embedding)
         benchmark(
             lambda: torch_embedding(out, idx, embd),
             lambda: llaisys.Ops.embedding(out_, idx_, embd_),
             device_name,
+            torch_compile_func=lambda: compiled_torch_embedding(out, idx, embd)
         )
 
 

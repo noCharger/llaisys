@@ -1,6 +1,10 @@
 #include "op.hpp"
 #include "../common.hpp"
 
+#ifdef ENABLE_NVIDIA_API
+#include "nvidia/linear_nvidia.hpp"
+#endif
+
 namespace llaisys::ops {
 namespace {
 
@@ -89,7 +93,7 @@ void linear(tensor_t out, tensor_t in, tensor_t weight, tensor_t bias) {
         
 #ifdef ENABLE_NVIDIA_API
     case LLAISYS_DEVICE_NVIDIA:
-        TO_BE_IMPLEMENTED();
+        nvidia::linear(out, in, weight, bias);
         return;
 #endif
         

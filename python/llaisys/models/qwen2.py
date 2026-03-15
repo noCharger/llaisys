@@ -18,14 +18,14 @@ except ImportError:
 
 class Qwen2:
 
-    def __init__(self, model_path, device: DeviceType = DeviceType.CPU):
+    def __init__(self, model_path, device: DeviceType = DeviceType.CPU, dtype: DataType = DataType.F32):
         model_path = Path(model_path)
         
         with open(model_path / "config.json", "r") as f:
             config = json.load(f)
             
         self.meta = LlaisysQwen2Meta()
-        self.meta.dtype = DataType.F32
+        self.meta.dtype = dtype
         
         self.meta.nlayer = config["num_hidden_layers"]
         self.meta.hs = config["hidden_size"]
@@ -60,12 +60,19 @@ class Qwen2:
                         
                         # Handle Torch Tensors (converts bf16 if needed)
                         if HAS_TORCH and isinstance(data, torch.Tensor):
-                            data = data.float().numpy()
+                            if self.meta.dtype == DataType.F16:
+                                data = data.half().numpy()
+                            else:
+                                data = data.float().numpy()
                             
-                        # Handle Numpy (ensure float32)
+                        # Handle Numpy (ensure correct dtype)
                         if isinstance(data, np.ndarray):
-                            if data.dtype != np.float32:
-                                data = data.astype(np.float32)
+                            target_dtype = np.float32
+                            if self.meta.dtype == DataType.F16:
+                                target_dtype = np.float16
+                            
+                            if data.dtype != target_dtype:
+                                data = data.astype(target_dtype)
                             if not data.flags['C_CONTIGUOUS']:
                                 data = np.ascontiguousarray(data)
                         
