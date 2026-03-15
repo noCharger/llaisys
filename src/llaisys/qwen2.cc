@@ -6,6 +6,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <cstdio>
+#include <algorithm>
+#include <random>
+#include <numeric>
 
 struct LlaisysQwen2Model {
     LlaisysQwen2Meta meta;
@@ -13,7 +17,14 @@ struct LlaisysQwen2Model {
     llaisysDeviceType_t device_type;
     int device_id;
 
-    // KV Cache: nlayer of tensors
+    llaisysTensor_t zero_bias_hs;
+    llaisysTensor_t zero_bias_di;
+    llaisysTensor_t zero_bias_voc;
+};
+
+struct LlaisysQwen2Session {
+    LlaisysQwen2Model* model;
+    
     // Key-Value Cache stores past token representations for each layer
     // Each tensor shape: [max_seq, nkvh, dh]
     std::vector<llaisysTensor_t> k_cache;
@@ -21,10 +32,6 @@ struct LlaisysQwen2Model {
     
     // Current filled position in KV cache
     size_t pos;
-
-    llaisysTensor_t zero_bias_hs;
-    llaisysTensor_t zero_bias_di;
-    llaisysTensor_t zero_bias_voc;
 };
 
 static llaisysTensor_t create_tensor(size_t* shape, size_t ndim, llaisysDataType_t dtype, llaisysDeviceType_t device, int device_id) {
@@ -82,7 +89,6 @@ __export struct LlaisysQwen2Model *llaisysQwen2ModelCreate(const LlaisysQwen2Met
     model->meta = *meta;
     model->device_type = device;
     model->device_id = (ndevice > 0) ? device_ids[0] : 0;
-    model->pos = 0;
 
     model->zero_bias_hs = create_zero_tensor(meta->hs, meta->dtype, device, model->device_id);
     model->zero_bias_di = create_zero_tensor(meta->di, meta->dtype, device, model->device_id);
@@ -160,12 +166,6 @@ __export struct LlaisysQwen2Model *llaisysQwen2ModelCreate(const LlaisysQwen2Met
         // Down
         shape[0] = hidden; shape[1] = inter_dim;
         model->weights.mlp_down_w[i] = create_weight(meta, shape, 2, device, model->device_id);
-
-        // KV Cache
-        // [max_seq, nkvh, dh]
-        shape[0] = meta->maxseq; shape[1] = meta->nkvh; shape[2] = meta->dh;
-        model->k_cache.push_back(create_weight(meta, shape, 3, device, model->device_id));
-        model->v_cache.push_back(create_weight(meta, shape, 3, device, model->device_id));
     }
 
     return model;
@@ -191,9 +191,6 @@ __export void llaisysQwen2ModelDestroy(struct LlaisysQwen2Model * model) {
         tensorDestroy(model->weights.mlp_gate_w[i]);
         tensorDestroy(model->weights.mlp_up_w[i]);
         tensorDestroy(model->weights.mlp_down_w[i]);
-        
-        tensorDestroy(model->k_cache[i]);
-        tensorDestroy(model->v_cache[i]);
     }
 
     free(model->weights.attn_norm_w);
@@ -216,14 +213,49 @@ __export void llaisysQwen2ModelDestroy(struct LlaisysQwen2Model * model) {
     delete model;
 }
 
+__export struct LlaisysQwen2Session *llaisysQwen2ModelCreateSession(struct LlaisysQwen2Model * model) {
+    LlaisysQwen2Session* session = new LlaisysQwen2Session();
+    session->model = model;
+    session->pos = 0;
+    
+    size_t shape[3];
+    shape[0] = model->meta.maxseq; shape[1] = model->meta.nkvh; shape[2] = model->meta.dh;
+    
+    for (size_t i = 0; i < model->meta.nlayer; ++i) {
+        session->k_cache.push_back(create_weight(&model->meta, shape, 3, model->device_type, model->device_id));
+        session->v_cache.push_back(create_weight(&model->meta, shape, 3, model->device_type, model->device_id));
+    }
+    
+    return session;
+}
+
+__export void llaisysQwen2ModelDestroySession(struct LlaisysQwen2Session * session) {
+    if (!session) return;
+    
+    for (size_t i = 0; i < session->k_cache.size(); ++i) {
+        tensorDestroy(session->k_cache[i]);
+        tensorDestroy(session->v_cache[i]);
+    }
+    delete session;
+}
+
+__export void llaisysQwen2ModelRewindSession(struct LlaisysQwen2Session * session, size_t len) {
+    if (!session) return;
+    if (len > session->pos) return;
+    session->pos = len;
+}
+
 __export struct LlaisysQwen2Weights *llaisysQwen2ModelWeights(struct LlaisysQwen2Model * model) {
     return &model->weights;
 }
 
-__export int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model * model, int64_t * token_ids, size_t ntoken) {
-    // 1. Embedding
-    // Input: [ntoken]
-    // Output: [ntoken, hs]
+__export int64_t llaisysQwen2ModelForward(struct LlaisysQwen2Session * session, int64_t * token_ids, size_t ntoken, float temp, float top_p, int top_k) {
+    LlaisysQwen2Model* model = session->model;
+    
+    if (session->pos + ntoken > model->meta.maxseq) {
+        fprintf(stderr, "Error: Context length exceeded limit %zu\n", model->meta.maxseq);
+        return -1;
+    }
     
     size_t seq = ntoken;
     size_t hs = model->meta.hs;
@@ -270,7 +302,7 @@ __export int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model * model, int64_
         llaisysTensor_t pos_ids = tensorCreate(shape_pos, 1, LLAISYS_DTYPE_I64, model->device_type, model->device_id);
         std::vector<int64_t> pos_data(seq);
         for (size_t p = 0; p < seq; ++p) {
-            pos_data[p] = model->pos + p;
+            pos_data[p] = session->pos + p;
         }
         tensorLoad(pos_ids, pos_data.data());
 
@@ -282,8 +314,8 @@ __export int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model * model, int64_
         // Update KV Cache
         // k_view is [seq, nkvh, dh]
         // k_cache is [max_seq, nkvh, dh]        
-        llaisysTensor_t k_cache_slot = tensorSlice(model->k_cache[i], 0, model->pos, model->pos + seq);
-        llaisysTensor_t v_cache_slot = tensorSlice(model->v_cache[i], 0, model->pos, model->pos + seq);
+        llaisysTensor_t k_cache_slot = tensorSlice(session->k_cache[i], 0, session->pos, session->pos + seq);
+        llaisysTensor_t v_cache_slot = tensorSlice(session->v_cache[i], 0, session->pos, session->pos + seq);
         
         // Copy data
         void* src_k = tensorGetData(k_view);
@@ -306,8 +338,8 @@ __export int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model * model, int64_
         tensorDestroy(v_cache_slot);
 
         // Attention
-        llaisysTensor_t k_full = tensorSlice(model->k_cache[i], 0, 0, model->pos + seq);
-        llaisysTensor_t v_full = tensorSlice(model->v_cache[i], 0, 0, model->pos + seq);
+        llaisysTensor_t k_full = tensorSlice(session->k_cache[i], 0, 0, session->pos + seq);
+        llaisysTensor_t v_full = tensorSlice(session->v_cache[i], 0, 0, session->pos + seq);
         
         // Output tensor [seq, nh, dh]
         llaisysTensor_t attn_out = tensorCreate(shape_q, 3, model->meta.dtype, model->device_type, model->device_id);
@@ -338,7 +370,7 @@ __export int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model * model, int64_
         // Residual Add: x = x + h
         llaisysAdd(x, x, h);
         tensorDestroy(h);
-        tensorDestroy(x_norm); // x was used in residual, x_norm was temp.
+        tensorDestroy(x_norm);
 
         // MLP
         llaisysTensor_t mlp_norm = tensorCreate(shape_embed, 2, model->meta.dtype, model->device_type, model->device_id);
@@ -388,32 +420,41 @@ __export int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model * model, int64_
     
     llaisysLinear(logits, last_token_state, model->weights.out_embed, model->zero_bias_voc);
     
-    // Argmax
-    size_t shape_scalar[1] = {1};
-    llaisysTensor_t max_idx = tensorCreate(shape_scalar, 1, LLAISYS_DTYPE_I64, model->device_type, model->device_id);
-    llaisysTensor_t max_val = tensorCreate(shape_scalar, 1, model->meta.dtype, model->device_type, model->device_id);
+    // Copy logits to host for sampling
+    size_t shape_logits_host[2] = {1, model->meta.voc};
+    llaisysTensor_t host_logits = tensorCreate(shape_logits_host, 2, model->meta.dtype, LLAISYS_DEVICE_CPU, 0);
     
-    size_t shape_logits_1d[1] = {model->meta.voc};
-    llaisysTensor_t logits_1d = tensorView(logits, shape_logits_1d, 1);
+    size_t elem_size = (model->meta.dtype == LLAISYS_DTYPE_F32) ? 4 : 2;
     
-    llaisysArgmax(max_idx, max_val, logits_1d);
-    
-    tensorDestroy(logits_1d);
-
-    int64_t result_token;
-    void* res_ptr = tensorGetData(max_idx);
     const auto runtime = llaisysGetRuntimeAPI(model->device_type);
-    runtime->memcpy_sync(&result_token, res_ptr, sizeof(int64_t), LLAISYS_MEMCPY_D2H);
+    runtime->memcpy_sync(tensorGetData(host_logits), tensorGetData(logits), 
+                         model->meta.voc * elem_size, 
+                         LLAISYS_MEMCPY_D2H);
 
+    size_t shape_out[1] = {1};
+    llaisysTensor_t out_token = tensorCreate(shape_out, 1, LLAISYS_DTYPE_I64, LLAISYS_DEVICE_CPU, 0);
+
+    llaisysRandomSample(out_token, host_logits, temp, top_p, top_k);
+    
+    int64_t result_token = *(int64_t*)tensorGetData(out_token);
+    
+    tensorDestroy(host_logits);
+    tensorDestroy(out_token);
+    
     tensorDestroy(x_final);
     tensorDestroy(last_token_state);
     tensorDestroy(logits);
-    tensorDestroy(max_idx);
-    tensorDestroy(max_val);
 
-    model->pos += ntoken;
+    session->pos += ntoken;
 
     return result_token;
+}
+
+__export int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model * model, int64_t * token_ids, size_t ntoken, float temp, float top_p, int top_k) {
+    auto session = llaisysQwen2ModelCreateSession(model);
+    int64_t res = llaisysQwen2ModelForward(session, token_ids, ntoken, temp, top_p, top_k);
+    llaisysQwen2ModelDestroySession(session);
+    return res;
 }
 
 } // extern "C"

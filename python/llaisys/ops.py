@@ -53,3 +53,13 @@ class Ops:
     @staticmethod
     def swiglu(out: Tensor, gate: Tensor, up: Tensor):
         LIB_LLAISYS.llaisysSwiGLU(out.lib_tensor(), gate.lib_tensor(), up.lib_tensor())
+
+    @staticmethod
+    def random_sample(out_token: Tensor, logits: Tensor, temp: float, top_p: float, top_k: int):
+        LIB_LLAISYS.llaisysRandomSample(
+            out_token.lib_tensor(), 
+            logits.lib_tensor(), 
+            c_float(temp), 
+            c_float(top_p), 
+            c_int(top_k)
+        )

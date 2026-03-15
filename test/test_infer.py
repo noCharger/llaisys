@@ -89,6 +89,7 @@ if __name__ == "__main__":
     parser.add_argument("--top_k", default=50, type=int)
     parser.add_argument("--temperature", default=1.0, type=float)
     parser.add_argument("--test", action="store_true")
+    parser.add_argument("--test_sampling", action="store_true", help="Test random sampling behaviors")
     parser.add_argument("--benchmark", action="store_true", help="Run latency benchmark")
     parser.add_argument("--repeat", default=10, type=int, help="Number of repeats for benchmark")
     parser.add_argument("--profile", action="store_true", help="Show e2e inference time profile")
@@ -199,3 +200,39 @@ if __name__ == "__main__":
     if args.test:
         assert llaisys_tokens == tokens
         print("\033[92mTest passed!\033[0m\n")
+
+    if args.test_sampling:
+        print("\n=== Testing Sampling Behaviors ===\n")
+        
+        # 1. Verify output same with deterministic params (top_k=1)
+        print("1. Verifying deterministic generation (top_k=1)...")
+        torch.manual_seed(42)
+        det_tokens_1, det_out_1 = llaisys_infer(
+            args.prompt, tokenizer, model, args.max_steps, top_p=1.0, top_k=1, temperature=1.0
+        )
+        torch.manual_seed(42)
+        det_tokens_2, det_out_2 = llaisys_infer(
+            args.prompt, tokenizer, model, args.max_steps, top_p=1.0, top_k=1, temperature=1.0
+        )
+        assert det_tokens_1 == det_tokens_2, "Outputs should be exactly the same for top_k=1"
+        print("   Deterministic check passed.\n")
+
+        # 2. Change parameters, output should be diff
+        print("2. Verifying random generation (top_k=50, top_p=0.9, temp=1.5)...")
+        rand_tokens_1, rand_out_1 = llaisys_infer(
+            args.prompt, tokenizer, model, args.max_steps, top_p=0.9, top_k=50, temperature=1.5
+        )
+        rand_tokens_2, rand_out_2 = llaisys_infer(
+            args.prompt, tokenizer, model, args.max_steps, top_p=0.9, top_k=50, temperature=1.5
+        )
+        if det_tokens_1 == rand_tokens_1:
+            print("Warning: Sampling output was identical to greedy output. This can happen by chance, but retrying with higher temp...")
+            rand_tokens_1, rand_out_1 = llaisys_infer(
+                args.prompt, tokenizer, model, args.max_steps, top_p=0.9, top_k=50, temperature=2.5
+            )
+            
+        assert det_tokens_1 != rand_tokens_1, "Sampling output should differ from greedy output"
+        print("   Random sampling check passed.\n")
+        
+        print("\033[92mSampling test passed!\033[0m\n")
+

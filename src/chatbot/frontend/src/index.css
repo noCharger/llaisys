@@ -1,0 +1,133 @@
+body { background-color: #f8f9fa; height: 100vh; margin: 0; }
+#root { display: flex; flex-direction: column; height: 100%; }
+
+.message { 
+    margin-bottom: 15px; 
+    padding: 10px 15px; 
+    border-radius: 15px; 
+    max-width: 80%; 
+    position: relative; 
+    word-wrap: break-word;
+}
+
+.user-message { 
+    background-color: #007bff; 
+    color: white; 
+    align-self: flex-end; 
+    margin-left: auto; 
+    white-space: pre-wrap;
+}
+
+.ai-message { 
+    background-color: #e9ecef; 
+    color: #212529; 
+    align-self: flex-start; 
+}
+
+/* Markdown Content */
+.markdown-content p {
+    margin-bottom: 0.5rem;
+}
+.markdown-content p:last-child {
+    margin-bottom: 0;
+}
+.markdown-content pre {
+    background-color: #f1f3f5;
+    padding: 10px;
+    border-radius: 5px;
+    overflow-x: auto;
+}
+.markdown-content code {
+    background-color: rgba(0,0,0,0.05);
+    padding: 2px 4px;
+    border-radius: 3px;
+    font-family: monospace;
+}
+.markdown-content pre code {
+    background-color: transparent;
+    padding: 0;
+}
+
+/* Edit Button */
+.edit-btn {
+    opacity: 0;
+    transition: opacity 0.2s ease-in-out;
+    background: rgba(0,0,0,0.1);
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.message:hover .edit-btn, .edit-btn:focus {
+    opacity: 1 !important;
+}
+.edit-btn:hover {
+    background-color: #f8f9fa !important;
+    transform: scale(1.05);
+}
+
+/* Thinking Indicator */
+.thinking-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: #6c757d;
+    font-style: italic;
+    font-size: 0.9em;
+    margin-bottom: 15px;
+    align-self: flex-start;
+    padding: 10px 15px;
+}
+.dot {
+    width: 6px;
+    height: 6px;
+    background-color: #6c757d;
+    border-radius: 50%;
+    animation: bounce 1.4s infinite ease-in-out both;
+}
+.dot:nth-child(1) { animation-delay: -0.32s; }
+.dot:nth-child(2) { animation-delay: -0.16s; }
+
+@keyframes bounce {
+    0%, 80%, 100% { transform: scale(0); }
+    40% { transform: scale(1); }
+}
+
+.input-area { padding: 20px; background-color: white; border-top: 1px solid #dee2e6; }
+
+/* Think Block Styles */
+.think-block {
+    background-color: #fff;
+    border-left: 4px solid #adb5bd;
+    padding: 8px 12px;
+    margin-bottom: 12px;
+    font-size: 0.9em;
+    color: #6c757d;
+    border-radius: 4px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+
+.think-block summary {
+    cursor: pointer;
+    font-weight: 600;
+    outline: none;
+    user-select: none;
+    color: #495057;
+    margin-bottom: 5px;
+    list-style: none;
+}
+.think-block summary::-webkit-details-marker {
+    display: none;
+}
+.think-block summary::before {
+    content: '▶';
+    font-size: 0.8em;
+    margin-right: 6px;
+    display: inline-block;
+    transition: transform 0.2s;
+}
+.think-block[open] summary::before {
+    transform: rotate(90deg);
+}
