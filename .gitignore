@@ -29,7 +29,7 @@ docs/
 cache/
 
 # JSON
-*.json
+package-lock.json
 
 #GGUF
 *.gguf
@@ -91,3 +91,10 @@ htmlcov/
 Thumbs.db
 ehthumbs.db
 desktop.ini
+
+# Node.js
+node_modules/
+
+# SSL Certificates
+src/chatbot/certs/
+*.pem

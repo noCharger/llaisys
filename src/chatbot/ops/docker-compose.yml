@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  # LLAISYS Backend
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: llaisys-prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - llaisys-net
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: llaisys-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/etc/grafana/dashboards
+    networks:
+      - llaisys-net
+    depends_on:
+      - prometheus
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: llaisys-jaeger
+    ports:
+      - "16686:16686" # Web UI
+      - "14268:14268" # Collector HTTP
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    networks:
+      - llaisys-net
+
+networks:
+  llaisys-net:
+    driver: bridge
