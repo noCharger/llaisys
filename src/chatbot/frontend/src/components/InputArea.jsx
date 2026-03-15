@@ -1,13 +1,17 @@
 import React, { useState } from 'react';
 
-const InputArea = ({ onSendMessage, disabled }) => {
-    const [text, setText] = useState('');
+const InputArea = ({ text, setText, onSendMessage, disabled }) => {
+    const [internalText, setInternalText] = useState('');
+    
+    const isControlled = text !== undefined && setText !== undefined;
+    const currentText = isControlled ? text : internalText;
+    const handleChange = isControlled ? (e) => setText(e.target.value) : (e) => setInternalText(e.target.value);
 
     const handleSubmit = (e) => {
         e.preventDefault();
-        if (text.trim() && !disabled) {
-            onSendMessage(text);
-            setText('');
+        if (currentText.trim() && !disabled) {
+            onSendMessage(currentText);
+            if (!isControlled) setInternalText('');
         }
     };
 
@@ -20,8 +24,8 @@ const InputArea = ({ onSendMessage, disabled }) => {
                         className="form-control"
                         placeholder="Type your message..."
                         autoComplete="off"
-                        value={text}
-                        onChange={(e) => setText(e.target.value)}
+                        value={currentText}
+                        onChange={handleChange}
                         disabled={disabled}
                     />
                     <button type="submit" className="btn btn-primary" disabled={disabled}>

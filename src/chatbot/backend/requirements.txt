@@ -1,11 +1,9 @@
 fastapi
 uvicorn
-sse-starlette
 transformers
-torch
-accelerate
 huggingface_hub
 prometheus_client
 opentelemetry-api
 opentelemetry-sdk
 opentelemetry-instrumentation-fastapi
+jinja2

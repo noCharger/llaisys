@@ -15,6 +15,7 @@ class ChatCompletionRequest(BaseModel):
     stream: Optional[bool] = False
     session_id: Optional[str] = None
     system_prompt: Optional[str] = None
+    use_template: Optional[bool] = False
 
 class ChatCompletionResponseChoice(BaseModel):
     index: int
@@ -44,3 +45,9 @@ class ChatCompletionChunk(BaseModel):
     created: int
     model: str
     choices: List[ChatCompletionChunkChoice]
+
+class ContextItemRequest(BaseModel):
+    id: str
+    content: str
+    tags: List[str] = []
+    metadata: Dict[str, Any] = {}

@@ -1,20 +1,25 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 
 const useChat = () => {
     const [messages, setMessages] = useState([]);
     const [isThinking, setIsThinking] = useState(false);
     const [error, setError] = useState(null);
-    const [apiUrl, setApiUrl] = useState(''); // Empty initially, will fetch
+    const [apiUrl, setApiUrl] = useState(''); 
     const sessionId = useRef('session-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now());
+    
+    const messagesRef = useRef(messages);
+    useEffect(() => {
+        messagesRef.current = messages;
+    }, [messages]);
 
     useEffect(() => {
         const fetchConfig = async () => {
             try {
-                console.log('Fetching configuration from /config...');
                 const res = await fetch('/config');
-                const config = await res.json();
-                console.log('Configuration loaded:', config);
-                if (config.apiUrl) setApiUrl(config.apiUrl);
+                if (res.ok) {
+                    const config = await res.json();
+                    if (config.apiUrl) setApiUrl(config.apiUrl);
+                }
             } catch (e) {
                 console.warn('Using default API URL', e);
             }
@@ -22,20 +27,26 @@ const useChat = () => {
         fetchConfig();
     }, []);
 
-    const sendMessage = async (text) => {
+    const sendMessage = useCallback(async (text) => {
         if (!text.trim()) return;
 
         const userMsg = { role: 'user', content: text };
+        
+        // Optimistic update
         setMessages(prev => [...prev, userMsg]);
         setIsThinking(true);
         setError(null);
 
         try {
-            const baseUrl = apiUrl || '/api';
-            const cleanUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
-            const endpoint = `${cleanUrl}/v1/chat/completions`;
+            let endpoint = '/v1/chat/completions';
+            if (apiUrl && apiUrl.startsWith('http')) {
+                endpoint = `${apiUrl}/v1/chat/completions`;
+            } else if (apiUrl) {
+                const cleanUrl = apiUrl.endsWith('/') ? apiUrl.slice(0, -1) : apiUrl;
+                endpoint = `${cleanUrl}/v1/chat/completions`;
+            }
 
-            const history = [...messages, userMsg];
+            const history = [...messagesRef.current, userMsg];
 
             const response = await fetch(endpoint, {
                 method: 'POST',
@@ -45,7 +56,8 @@ const useChat = () => {
                     messages: history,
                     stream: true,
                     temperature: 0.7,
-                    session_id: sessionId.current
+                    session_id: sessionId.current,
+                    use_template: true
                 })
             });
 
@@ -61,33 +73,49 @@ const useChat = () => {
             
             let aiMsg = { role: 'assistant', content: '' };
             setMessages(prev => [...prev, aiMsg]);
+            
+            let buffer = '';
 
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
                 
                 const chunk = decoder.decode(value, { stream: true });
-                const lines = chunk.split('\n');
+                buffer += chunk;
                 
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || ''; 
+                
+                let deltaContent = '';
+
                 for (const line of lines) {
                     if (line.startsWith('data: ')) {
                         const jsonStr = line.substring(6).trim();
                         if (jsonStr === '[DONE]') break;
+                        
                         try {
                             const data = JSON.parse(jsonStr);
                             const delta = data.choices[0].delta.content || '';
                             if (delta) {
-                                aiMsg.content += delta;
-                                setMessages(prev => {
-                                    const newMsgs = [...prev];
-                                    newMsgs[newMsgs.length - 1] = { ...aiMsg };
-                                    return newMsgs;
-                                });
+                                deltaContent += delta;
                             }
                         } catch (e) {
-                            // ignore parse errors
+                            console.warn("Failed to parse SSE JSON:", jsonStr);
                         }
                     }
+                }
+
+                if (deltaContent) {
+                    aiMsg.content += deltaContent;
+                    setMessages(prev => {
+                        const newMsgs = [...prev];
+                        if (newMsgs.length > 0 && newMsgs[newMsgs.length - 1].role === 'assistant') {
+                            newMsgs[newMsgs.length - 1] = { ...aiMsg };
+                        } else {
+                            newMsgs.push({ ...aiMsg });
+                        }
+                        return newMsgs;
+                    });
                 }
             }
 
@@ -97,9 +125,9 @@ const useChat = () => {
             setError(err.message);
             setMessages(prev => [...prev, { role: 'assistant', content: `Connection Error: ${err.message}`, isError: true }]);
         }
-    };
+    }, [apiUrl]);
 
-    return { messages, sendMessage, isThinking, error };
+    return { messages, sendMessage, isThinking, error, setMessages };
 };
 
 export default useChat;

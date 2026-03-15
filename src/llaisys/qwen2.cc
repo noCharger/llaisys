@@ -6,6 +6,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <cstdio>
+#include <algorithm>
+#include <random>
+#include <numeric>
 
 struct LlaisysQwen2Model {
     LlaisysQwen2Meta meta;
@@ -248,6 +252,11 @@ __export struct LlaisysQwen2Weights *llaisysQwen2ModelWeights(struct LlaisysQwen
 __export int64_t llaisysQwen2ModelForward(struct LlaisysQwen2Session * session, int64_t * token_ids, size_t ntoken, float temp, float top_p, int top_k) {
     LlaisysQwen2Model* model = session->model;
     
+    if (session->pos + ntoken > model->meta.maxseq) {
+        fprintf(stderr, "Error: Context length exceeded limit %zu\n", model->meta.maxseq);
+        return -1;
+    }
+    
     size_t seq = ntoken;
     size_t hs = model->meta.hs;
 
@@ -361,7 +370,7 @@ __export int64_t llaisysQwen2ModelForward(struct LlaisysQwen2Session * session, 
         // Residual Add: x = x + h
         llaisysAdd(x, x, h);
         tensorDestroy(h);
-        tensorDestroy(x_norm); // x was used in residual, x_norm was temp.
+        tensorDestroy(x_norm);
 
         // MLP
         llaisysTensor_t mlp_norm = tensorCreate(shape_embed, 2, model->meta.dtype, model->device_type, model->device_id);
@@ -411,38 +420,39 @@ __export int64_t llaisysQwen2ModelForward(struct LlaisysQwen2Session * session, 
     
     llaisysLinear(logits, last_token_state, model->weights.out_embed, model->zero_bias_voc);
     
-    // Argmax
-    size_t shape_scalar[1] = {1};
-    llaisysTensor_t max_idx = tensorCreate(shape_scalar, 1, LLAISYS_DTYPE_I64, model->device_type, model->device_id);
-    llaisysTensor_t max_val = tensorCreate(shape_scalar, 1, model->meta.dtype, model->device_type, model->device_id);
+    // Copy logits to host for sampling
+    size_t shape_logits_host[2] = {1, model->meta.voc};
+    llaisysTensor_t host_logits = tensorCreate(shape_logits_host, 2, model->meta.dtype, LLAISYS_DEVICE_CPU, 0);
     
-    size_t shape_logits_1d[1] = {model->meta.voc};
-    llaisysTensor_t logits_1d = tensorView(logits, shape_logits_1d, 1);
+    size_t elem_size = (model->meta.dtype == LLAISYS_DTYPE_F32) ? 4 : 2;
     
-    // TODO: Implement Temperature, Top-P, Top-K
-    llaisysArgmax(max_idx, max_val, logits_1d);
-    
-    tensorDestroy(logits_1d);
-
-    int64_t result_token;
-    void* res_ptr = tensorGetData(max_idx);
     const auto runtime = llaisysGetRuntimeAPI(model->device_type);
-    runtime->memcpy_sync(&result_token, res_ptr, sizeof(int64_t), LLAISYS_MEMCPY_D2H);
+    runtime->memcpy_sync(tensorGetData(host_logits), tensorGetData(logits), 
+                         model->meta.voc * elem_size, 
+                         LLAISYS_MEMCPY_D2H);
 
+    size_t shape_out[1] = {1};
+    llaisysTensor_t out_token = tensorCreate(shape_out, 1, LLAISYS_DTYPE_I64, LLAISYS_DEVICE_CPU, 0);
+
+    llaisysRandomSample(out_token, host_logits, temp, top_p, top_k);
+    
+    int64_t result_token = *(int64_t*)tensorGetData(out_token);
+    
+    tensorDestroy(host_logits);
+    tensorDestroy(out_token);
+    
     tensorDestroy(x_final);
     tensorDestroy(last_token_state);
     tensorDestroy(logits);
-    tensorDestroy(max_idx);
-    tensorDestroy(max_val);
 
     session->pos += ntoken;
 
     return result_token;
 }
 
-__export int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model * model, int64_t * token_ids, size_t ntoken) {
+__export int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model * model, int64_t * token_ids, size_t ntoken, float temp, float top_p, int top_k) {
     auto session = llaisysQwen2ModelCreateSession(model);
-    int64_t res = llaisysQwen2ModelForward(session, token_ids, ntoken, 1.0f, 1.0f, 1);
+    int64_t res = llaisysQwen2ModelForward(session, token_ids, ntoken, temp, top_p, top_k);
     llaisysQwen2ModelDestroySession(session);
     return res;
 }

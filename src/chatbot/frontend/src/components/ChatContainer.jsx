@@ -2,7 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import Message from './Message';
 import ThinkingIndicator from './ThinkingIndicator';
 
-const ChatContainer = ({ messages, isThinking, error }) => {
+const ChatContainer = ({ messages, isThinking, error, onEdit }) => {
     const endRef = useRef(null);
 
     useEffect(() => {
@@ -12,7 +12,13 @@ const ChatContainer = ({ messages, isThinking, error }) => {
     return (
         <div id="chat-container" className="flex-grow-1 overflow-auto p-3">
             {messages.map((msg, idx) => (
-                <Message key={idx} role={msg.role} content={msg.content} />
+                <Message 
+                    key={idx} 
+                    index={idx}
+                    role={msg.role} 
+                    content={msg.content} 
+                    onEdit={onEdit}
+                />
             ))}
             {isThinking && <ThinkingIndicator />}
             {error && (

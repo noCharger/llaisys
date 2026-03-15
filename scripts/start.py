@@ -14,6 +14,7 @@ import logging
 ROOT_DIR = Path(__file__).parent.parent.absolute()
 BACKEND_DIR = ROOT_DIR / "src" / "chatbot" / "backend"
 FRONTEND_DIR = ROOT_DIR / "src" / "chatbot" / "frontend"
+OPS_DIR = ROOT_DIR / "src" / "chatbot" / "ops"
 LOGS_DIR = ROOT_DIR / "logs"
 
 LOGS_DIR.mkdir(exist_ok=True)
@@ -33,6 +34,7 @@ ssl_context.check_hostname = False
 ssl_context.verify_mode = ssl.CERT_NONE
 
 processes = []
+observability_started = False
 
 def cleanup():
     logger.info("Initiating graceful shutdown...")
@@ -49,6 +51,14 @@ def cleanup():
             except subprocess.TimeoutExpired:
                 logger.warning(f"{name} did not terminate, forcing kill...")
                 p.kill()
+    
+    if observability_started:
+        logger.info("Stopping observability stack (Docker Compose)...")
+        try:
+            subprocess.run(["docker", "compose", "down"], cwd=OPS_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            logger.error(f"Error stopping observability stack: {e}")
+
     logger.info("Shutdown complete.")
 
 atexit.register(cleanup)
@@ -100,18 +110,81 @@ def start_process(name: str, cmd: list, cwd: Path, log_file: str, env: dict = No
     processes.append((process, name))
     return process
 
+def check_docker() -> bool:
+    try:
+        subprocess.run(["docker", "--version"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["docker", "compose", "version"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+def start_observability():
+    global observability_started
+    logger.info("Checking observability stack requirements...")
+    
+    if not check_docker():
+        logger.warning("Docker or Docker Compose not found. Skipping observability stack.")
+        return
+
+    docker_compose_file = OPS_DIR / "docker-compose.yml"
+    if not docker_compose_file.exists():
+        logger.warning(f"docker-compose.yml not found at {OPS_DIR}. Skipping observability stack.")
+        return
+
+    logger.info(f"Starting observability stack from {OPS_DIR}...")
+    try:
+        # Start containers detached
+        subprocess.run(["docker", "compose", "up", "-d"], cwd=OPS_DIR, check=True)
+        observability_started = True
+        
+        # Health checks (non-blocking, just log)
+        logger.info("Waiting for observability services to be ready...")
+        
+        # Give it a moment to start
+        time.sleep(5)
+        
+        grafana_ok = check_health("http://localhost:3001/api/health", timeout=15, interval=2)
+        prometheus_ok = check_health("http://localhost:9090/-/healthy", timeout=15, interval=2)
+        
+        if grafana_ok:
+            logger.info("Grafana is running at http://localhost:3001 (User/Pass: admin/admin)")
+        else:
+            logger.warning("Grafana health check timed out, but container might be starting.")
+            
+        if prometheus_ok:
+            logger.info("Prometheus is running at http://localhost:9090")
+        else:
+            logger.warning("Prometheus health check timed out.")
+            
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to launch observability stack: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error launching observability stack: {e}")
+
 def main():
     parser = argparse.ArgumentParser(description="LLAISYS Chatbot Launcher")
     parser.add_argument("--model_path", type=str, help="Path to the LLM model or HuggingFace ID", default=None)
     parser.add_argument("--max-sessions", type=int, help="Maximum concurrent sessions", default=100)
-    parser.add_argument("--max-steps", type=int, help="Maximum generation steps per request", default=1024)
+    parser.add_argument("--max-steps", type=int, help="Maximum generation steps per request", default=4096)
+    parser.add_argument("--temperature", type=float, help="Default temperature", default=0.7)
+    parser.add_argument("--top-p", type=float, help="Default top_p", default=0.9)
+    parser.add_argument("--top-k", type=int, help="Default top_k", default=50)
+    parser.add_argument("--system-prompt", type=str, help="Default system prompt", default=None)
     parser.add_argument("--device", type=str, choices=["cpu", "nvidia"], help="Device to run the model on (cpu or nvidia)", default="cpu")
     parser.add_argument("--dtype", type=str, choices=["float32", "float16"], help="Model data type", default="float32")
     parser.add_argument("--no-https", action="store_true", help="Disable HTTPS and run in HTTP mode only")
+    parser.add_argument("--prod", action="store_true", default=True, help="Enable production mode (observability stack). Default: True")
+    parser.add_argument("--no-prod", dest="prod", action="store_false", help="Disable production mode")
     args = parser.parse_args()
 
     logger.info("=== LLAISYS Chatbot Launcher ===")
     
+    if args.prod:
+        logger.info("Production mode enabled. Initializing observability stack...")
+        start_observability()
+    else:
+        logger.info("Production mode disabled. Skipping observability stack.")
+
     model_path = args.model_path or os.environ.get("MODEL_PATH", "Qwen/Qwen2-0.5B-Instruct")
     device = args.device or os.environ.get("DEVICE", "cpu")
     dtype = args.dtype or os.environ.get("DTYPE", "float32")
@@ -121,6 +194,11 @@ def main():
     backend_https_port = int(backend_port) + 1
     frontend_https_port = int(frontend_port) + 1
     
+    backend_reqs = BACKEND_DIR / "requirements.txt"
+    if backend_reqs.exists():
+        logger.info(f"Installing backend dependencies from {backend_reqs}...")
+        subprocess.run([sys.executable, "-m", "pip", "install", "-r", str(backend_reqs)], check=True)
+
     backend_cmd = [
         sys.executable, "server.py", 
         "--model", model_path, 
@@ -128,8 +206,14 @@ def main():
         "--dtype", dtype,
         "--port", backend_port,
         "--max-sessions", str(args.max_sessions),
-        "--max-steps", str(args.max_steps)
+        "--max-steps", str(args.max_steps),
+        "--temperature", str(args.temperature),
+        "--top-p", str(args.top_p),
+        "--top-k", str(args.top_k)
     ]
+    
+    if args.system_prompt:
+        backend_cmd.extend(["--system-prompt", args.system_prompt])
     
     if args.no_https:
         backend_cmd.append("--no-https")
@@ -160,9 +244,12 @@ def main():
         logger.error("Backend failed to start properly. Check logs/backend.log")
         sys.exit(1)
         
-    if not (FRONTEND_DIR / "node_modules").exists():
+    if not (FRONTEND_DIR / "package-lock.json").exists() or not (FRONTEND_DIR / "node_modules").exists():
         logger.info("Installing frontend dependencies...")
         subprocess.run(["npm", "install"], cwd=FRONTEND_DIR, check=True)
+
+    logger.info("Building frontend...")
+    subprocess.run(["npm", "run", "build"], cwd=FRONTEND_DIR, check=True)
     
     frontend_env = {"PORT": frontend_port}
     

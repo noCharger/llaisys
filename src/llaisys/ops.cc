@@ -11,6 +11,7 @@
 #include "../ops/rope/op.hpp"
 #include "../ops/self_attention/op.hpp"
 #include "../ops/swiglu/op.hpp"
+#include "../ops/random_sample/op.hpp"
 
 __C {
     void llaisysAdd(llaisysTensor_t c, llaisysTensor_t a, llaisysTensor_t b) {
@@ -39,5 +40,8 @@ __C {
     }
     void llaisysSwiGLU(llaisysTensor_t out, llaisysTensor_t gate, llaisysTensor_t up) {
         llaisys::ops::swiglu(out->tensor, gate->tensor, up->tensor);
+    }
+    void llaisysRandomSample(llaisysTensor_t out_token, llaisysTensor_t logits, float temp, float top_p, int top_k) {
+        llaisys::ops::random_sample(out_token->tensor, logits->tensor, temp, top_p, top_k);
     }
 }
