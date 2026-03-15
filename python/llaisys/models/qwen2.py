@@ -124,6 +124,29 @@ class Qwen2:
         
         return None
 
+    def create_session(self):
+        return LIB_LLAISYS.llaisysQwen2ModelCreateSession(self.model)
+
+    def destroy_session(self, session_ptr):
+        LIB_LLAISYS.llaisysQwen2ModelDestroySession(session_ptr)
+
+    def rewind_session(self, session_ptr, length):
+        LIB_LLAISYS.llaisysQwen2ModelRewindSession(session_ptr, length)
+
+    def forward(self, session_ptr, input_ids, temperature=0.7, top_p=0.9, top_k=40):
+        if not input_ids:
+             return self.end_token
+        
+        arr = (ctypes.c_int64 * len(input_ids))(*input_ids)
+        return LIB_LLAISYS.llaisysQwen2ModelForward(
+            session_ptr, 
+            arr, 
+            len(input_ids), 
+            temperature, 
+            top_p, 
+            top_k
+        )
+
     def generate(
         self,
         inputs: Sequence[int],
@@ -136,22 +159,26 @@ class Qwen2:
             return []
             
         tokens = list(inputs)
+        session = self.create_session()
         
-        # Prefill
-        input_array = (ctypes.c_int64 * len(tokens))(*tokens)
-        next_token = LIB_LLAISYS.llaisysQwen2ModelInfer(self.model, input_array, len(tokens))
-        
-        tokens.append(next_token)
-        if next_token == self.end_token:
-            return tokens
-        
-        for _ in range(max_new_tokens - 1):
-            input_array = (ctypes.c_int64 * 1)(tokens[-1])
-            next_token = LIB_LLAISYS.llaisysQwen2ModelInfer(self.model, input_array, 1)
-            tokens.append(next_token)
+        try:
+            # Prefill
+            input_array = (ctypes.c_int64 * len(tokens))(*tokens)
+            next_token = LIB_LLAISYS.llaisysQwen2ModelForward(session, input_array, len(tokens), temperature, top_p, top_k)
             
+            tokens.append(next_token)
             if next_token == self.end_token:
-                break
+                return tokens
+            
+            for _ in range(max_new_tokens - 1):
+                input_array = (ctypes.c_int64 * 1)(tokens[-1])
+                next_token = LIB_LLAISYS.llaisysQwen2ModelForward(session, input_array, 1, temperature, top_p, top_k)
+                tokens.append(next_token)
+                
+                if next_token == self.end_token:
+                    break
+        finally:
+            self.destroy_session(session)
                 
         return tokens
         

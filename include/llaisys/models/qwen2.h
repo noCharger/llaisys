@@ -35,6 +35,11 @@ __C {
 
     __export void llaisysQwen2ModelDestroy(struct LlaisysQwen2Model * model);
 
+    __export struct LlaisysQwen2Session *llaisysQwen2ModelCreateSession(struct LlaisysQwen2Model * model);
+    __export void llaisysQwen2ModelDestroySession(struct LlaisysQwen2Session * session);
+    __export void llaisysQwen2ModelRewindSession(struct LlaisysQwen2Session * session, size_t len);
+    __export int64_t llaisysQwen2ModelForward(struct LlaisysQwen2Session * session, int64_t * token_ids, size_t ntoken, float temp, float top_p, int top_k);
+
     __export struct LlaisysQwen2Weights *llaisysQwen2ModelWeights(struct LlaisysQwen2Model * model);
 
     __export int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model * model, int64_t * token_ids, size_t ntoken);

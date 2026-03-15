@@ -49,3 +49,23 @@ def load_qwen2(lib):
 
     lib.llaisysQwen2ModelInfer.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int64), ctypes.c_size_t]
     lib.llaisysQwen2ModelInfer.restype = ctypes.c_int64
+
+    # Session APIs
+    lib.llaisysQwen2ModelCreateSession.argtypes = [ctypes.c_void_p]
+    lib.llaisysQwen2ModelCreateSession.restype = ctypes.c_void_p
+
+    lib.llaisysQwen2ModelDestroySession.argtypes = [ctypes.c_void_p]
+    lib.llaisysQwen2ModelDestroySession.restype = None
+
+    lib.llaisysQwen2ModelRewindSession.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    lib.llaisysQwen2ModelRewindSession.restype = None
+
+    lib.llaisysQwen2ModelForward.argtypes = [
+        ctypes.c_void_p, 
+        ctypes.POINTER(ctypes.c_int64), 
+        ctypes.c_size_t, 
+        ctypes.c_float, 
+        ctypes.c_float, 
+        ctypes.c_int
+    ]
+    lib.llaisysQwen2ModelForward.restype = ctypes.c_int64
