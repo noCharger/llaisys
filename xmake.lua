@@ -2,6 +2,7 @@ add_rules("mode.debug", "mode.release")
 set_encodings("utf-8")
 
 add_includedirs("include")
+add_includedirs("src")
 
 -- CPU --
 includes("xmake/cpu.lua")
@@ -37,6 +38,9 @@ target("llaisys-device")
     set_kind("static")
     add_deps("llaisys-utils")
     add_deps("llaisys-device-cpu")
+    if has_config("nv-gpu") then
+        add_deps("llaisys-device-nvidia")
+    end
 
     set_languages("cxx17")
     set_warnings("all", "error")
@@ -83,6 +87,9 @@ target_end()
 target("llaisys-ops")
     set_kind("static")
     add_deps("llaisys-ops-cpu")
+    if has_config("nv-gpu") then
+        add_deps("llaisys-ops-nvidia")
+    end
 
     set_languages("cxx17")
     set_warnings("all", "error")
@@ -97,6 +104,48 @@ target_end()
 
 target("llaisys")
     set_kind("shared")
+    
+    if has_config("nv-gpu") then
+        if is_plat("linux") then
+            add_deps("llaisys-ops-nvidia")
+            add_deps("llaisys-device-nvidia")
+            add_links("cublas")
+        end
+        add_rules("cuda")
+        
+        -- Enable device linking for the final shared library link phase
+        set_policy("build.cuda.devlink", true)
+        
+        -- force enable -fPIC
+        if is_plat("linux") then
+            add_cxflags("-fPIC")
+        end
+        
+        -- Link cudadevrt if using RDC (often required implicitly by xmake/cuda rule when RDC is on)
+        add_links("cudadevrt")
+        
+        -- Ensure RDC is enabled for the shared target as well
+        if is_plat("linux") then
+             add_values("cuda.rdc", true)
+        end
+
+        -- Ensure the final linker can find the cuda driver stubs
+        on_load(function (target)
+            import("lib.detect.find_tool")
+            local nvcc = find_tool("nvcc")
+            if nvcc ~= nil then 
+                if is_plat("windows") then 
+                    nvcc_path = os.iorun("where nvcc"):match("(.-)\r?\n") 
+                else 
+                    nvcc_path = nvcc.program 
+                end 
+    
+                target:add("linkdirs", path.directory(path.directory(nvcc_path)) .. "/lib64/stubs") 
+                target:add("links", "cuda") 
+            end 
+        end)
+    end
+    
     add_deps("llaisys-utils")
     add_deps("llaisys-device")
     add_deps("llaisys-core")
@@ -106,19 +155,21 @@ target("llaisys")
     set_languages("cxx17")
     set_warnings("all", "error")
     add_files("src/llaisys/*.cc")
+
+    if has_config("nv-gpu") then
+        add_files("src/llaisys/cuda_dummy.cu")
+    end
+
     set_installdir(".")
 
-    
     after_install(function (target)
         -- copy shared library to python package
         print("Copying llaisys to python/llaisys/libllaisys/ ..")
         if is_plat("windows") then
             os.cp("bin/*.dll", "python/llaisys/libllaisys/")
-        end
-        if is_plat("linux") then
+        elseif is_plat("linux") then
             os.cp("lib/*.so", "python/llaisys/libllaisys/")
-        end
-        if is_plat("macosx") then
+        elseif is_plat("macosx") then
             os.cp("lib/*.dylib", "python/llaisys/libllaisys/")
         end
     end)

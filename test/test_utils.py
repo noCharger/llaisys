@@ -2,6 +2,16 @@ import llaisys
 import torch
 
 
+def set_seed(seed=42):
+    import random
+    import numpy as np
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
 def random_tensor(
     shape, dtype_name, device_name, device_id=0, scale=None, bias=None
 ) -> tuple[torch.Tensor, llaisys.Tensor]:
@@ -155,32 +165,82 @@ def check_equal(
         if torch.allclose(result, torch_answer, atol=atol, rtol=rtol):
             return True
 
-    print(f"LLAISYS result: \n{result}")
-    print(f"Torch answer: \n{torch_answer}")
+    # Detailed error reporting
+    diff = torch.abs(result - torch_answer)
+    max_diff = torch.max(diff).item()
+    max_rel_diff = torch.max(diff / (torch.abs(torch_answer) + 1e-12)).item()
+    mismatch_cnt = torch.sum(diff > atol + rtol * torch.abs(torch_answer)).item()
+    total_cnt = result.numel()
+
+    print(f"\nMismatch details:")
+    print(f"  Max Abs Diff: {max_diff:.6e} (atol={atol})")
+    print(f"  Max Rel Diff: {max_rel_diff:.6e} (rtol={rtol})")
+    print(f"  Mismatched elements: {mismatch_cnt}/{total_cnt} ({mismatch_cnt/total_cnt*100:.2f}%)")
+    
+    # Print first few mismatches
+    mask = diff > atol + rtol * torch.abs(torch_answer)
+    if mismatch_cnt > 0:
+        indices = torch.nonzero(mask, as_tuple=True)
+        print(f"  First 5 mismatches:")
+        for i in range(min(5, mismatch_cnt)):
+            idx = tuple(ind[i].item() for ind in indices)
+            val_llaisys = result[idx].item()
+            val_torch = torch_answer[idx].item()
+            print(f"    At {idx}: LLAISYS={val_llaisys:.6e}, Torch={val_torch:.6e}, Diff={abs(val_llaisys-val_torch):.6e}")
+
+    # print(f"LLAISYS result: \n{result}")
+    # print(f"Torch answer: \n{torch_answer}")
     return False
 
 
-def benchmark(torch_func, llaisys_func, device_name, warmup=10, repeat=100):
+def benchmark(torch_func, llaisys_func, device_name, warmup=10, repeat=100, torch_compile_func=None):
+    import time
+    import numpy as np
+
     api = llaisys.RuntimeAPI(llaisys_device(device_name))
 
-    def time_op(func):
-        import time
-
+    def time_op(func, name):
+        print(f"    Benchmarking {name}...")
+        # Warmup
         for _ in range(warmup):
             func()
         api.device_synchronize()
-        start = time.time()
-        for _ in range(repeat):
-            func()
-        api.device_synchronize()
-        end = time.time()
-        return (end - start) / repeat
 
-    torch_time = time_op(torch_func)
-    llaisys_time = time_op(llaisys_func)
-    print(
-        f"        Torch time: {torch_time*1000:.5f} ms \n        LLAISYS time: {llaisys_time*1000:.5f} ms"
-    )
+        # Measurement
+        latencies = []
+        for _ in range(repeat):
+            start = time.time()
+            func()
+            api.device_synchronize()
+            end = time.time()
+            latencies.append((end - start) * 1000)  # Convert to ms
+
+        return np.array(latencies)
+
+    torch_latencies = time_op(torch_func, "Torch Eager")
+    llaisys_latencies = time_op(llaisys_func, "LLAISYS")
+    
+    torch_compile_latencies = None
+    if torch_compile_func is not None:
+        torch_compile_latencies = time_op(torch_compile_func, "Torch Compile")
+
+    def print_metrics(name, latencies):
+        mean = np.mean(latencies)
+        p50 = np.percentile(latencies, 50)
+        p90 = np.percentile(latencies, 90)
+        p99 = np.percentile(latencies, 99)
+        std = np.std(latencies)
+        print(f"        {name:<15} time: {mean:.5f} ms (P50: {p50:.5f}, P90: {p90:.5f}, P99: {p99:.5f}, Std: {std:.5f})")
+
+    print_metrics("Torch Eager", torch_latencies)
+    if torch_compile_latencies is not None:
+        print_metrics("Torch Compile", torch_compile_latencies)
+        speedup = np.mean(torch_compile_latencies) / np.mean(llaisys_latencies)
+        print(f"        LLAISYS vs Compile speedup: {speedup:.2f}x")
+    
+    print_metrics("LLAISYS", llaisys_latencies)
+    speedup_eager = np.mean(torch_latencies) / np.mean(llaisys_latencies)
+    print(f"        LLAISYS vs Eager speedup:   {speedup_eager:.2f}x")
 
 
 def torch_device(device_name: str, device_id=0):

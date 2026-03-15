@@ -38,10 +38,12 @@ def test_op_linear(
     assert check_equal(out_, out, atol=atol, rtol=rtol)
 
     if profile:
+        compiled_torch_linear = torch.compile(torch_linear)
         benchmark(
             lambda: torch_linear(out, x, w, bias),
             lambda: llaisys.Ops.linear(out_, x_, w_, bias_),
             device_name,
+            torch_compile_func=lambda: compiled_torch_linear(out, x, w, bias)
         )
 
 

@@ -6,7 +6,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
-#include <iostream>
 
 struct LlaisysQwen2Model {
     LlaisysQwen2Meta meta;
@@ -15,6 +14,7 @@ struct LlaisysQwen2Model {
     int device_id;
 
     // KV Cache: nlayer of tensors
+    // Key-Value Cache stores past token representations for each layer
     // Each tensor shape: [max_seq, nkvh, dh]
     std::vector<llaisysTensor_t> k_cache;
     std::vector<llaisysTensor_t> v_cache;
@@ -75,7 +75,9 @@ static llaisysTensor_t create_zero_tensor(size_t size, llaisysDataType_t dtype, 
     return t;
 }
 
-struct LlaisysQwen2Model *llaisysQwen2ModelCreate(const LlaisysQwen2Meta *meta, llaisysDeviceType_t device, int *device_ids, int ndevice) {
+extern "C" {
+
+__export struct LlaisysQwen2Model *llaisysQwen2ModelCreate(const LlaisysQwen2Meta *meta, llaisysDeviceType_t device, int *device_ids, int ndevice) {
     LlaisysQwen2Model* model = new LlaisysQwen2Model();
     model->meta = *meta;
     model->device_type = device;
@@ -169,7 +171,7 @@ struct LlaisysQwen2Model *llaisysQwen2ModelCreate(const LlaisysQwen2Meta *meta, 
     return model;
 }
 
-void llaisysQwen2ModelDestroy(struct LlaisysQwen2Model * model) {
+__export void llaisysQwen2ModelDestroy(struct LlaisysQwen2Model * model) {
     if (!model) return;
     
     tensorDestroy(model->weights.in_embed);
@@ -214,11 +216,11 @@ void llaisysQwen2ModelDestroy(struct LlaisysQwen2Model * model) {
     delete model;
 }
 
-struct LlaisysQwen2Weights *llaisysQwen2ModelWeights(struct LlaisysQwen2Model * model) {
+__export struct LlaisysQwen2Weights *llaisysQwen2ModelWeights(struct LlaisysQwen2Model * model) {
     return &model->weights;
 }
 
-int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model * model, int64_t * token_ids, size_t ntoken) {
+__export int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model * model, int64_t * token_ids, size_t ntoken) {
     // 1. Embedding
     // Input: [ntoken]
     // Output: [ntoken, hs]
@@ -413,3 +415,5 @@ int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model * model, int64_t * token
 
     return result_token;
 }
+
+} // extern "C"

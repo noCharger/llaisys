@@ -31,10 +31,12 @@ def test_op_add(
     assert check_equal(c_, c, atol=atol, rtol=rtol)
 
     if profile:
+        compiled_torch_add = torch.compile(torch_add)
         benchmark(
             lambda: torch_add(c, a, b),
             lambda: llaisys.Ops.add(c_, a_, b_),
             device_name,
+            torch_compile_func=lambda: compiled_torch_add(c, a, b)
         )
 
 

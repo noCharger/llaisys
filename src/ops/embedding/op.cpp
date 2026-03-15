@@ -1,6 +1,10 @@
 #include "op.hpp"
 #include "../common.hpp"
 
+#ifdef ENABLE_NVIDIA_API
+#include "nvidia/embedding_nvidia.hpp"
+#endif
+
 namespace llaisys::ops {
 namespace {
 
@@ -60,7 +64,7 @@ void embedding(tensor_t out, tensor_t index, tensor_t weight) {
 
 #ifdef ENABLE_NVIDIA_API
     if (out->deviceType() == LLAISYS_DEVICE_NVIDIA) {
-        TO_BE_IMPLEMENTED();
+        nvidia::embedding(out, index, weight);
         return;
     }
 #endif
