@@ -50,20 +50,6 @@ def create_llaisys_tensor(torch_tensor, device_name):
     )
     return llaisys_tensor
 
-def create_workspace(device_name):
-    """
-    Allocates workspace memory for NVIDIA device sampling.
-    """
-    if device_name == "nvidia":
-        ws_size = 32 * 1024 * 1024 # 32MB
-        return llaisys.Tensor(
-            shape=(ws_size,),
-            dtype=llaisys_dtype("u8"),
-            device=llaisys_device(device_name),
-            device_id=0
-        )
-    return None
-
 def get_output_token(out_token_llaisys, device_name):
     """
     Retrieves the sampled token from the llaisys output tensor.
@@ -93,11 +79,10 @@ def test_top_k(device):
     # Prepare llaisys tensors
     logits_llaisys = create_llaisys_tensor(logits_torch, device)
     out_token, out_token_llaisys = zero_tensor((1,), "i64", device)
-    workspace = create_workspace(device)
 
     # Run multiple iterations to verify constraint
     for _ in range(50):
-        llaisys.Ops.random_sample(out_token_llaisys, logits_llaisys, workspace, 1.0, 1.0, top_k)
+        llaisys.Ops.random_sample(out_token_llaisys, logits_llaisys, 1.0, 1.0, top_k)
         token_id = get_output_token(out_token_llaisys, device)
         assert token_id in allowed_indices, f"Top-K failed: token {token_id} not in top {top_k} indices"
         
@@ -114,12 +99,11 @@ def test_top_p(device):
     
     logits_llaisys = create_llaisys_tensor(logits_torch, device)
     out_token, out_token_llaisys = zero_tensor((1,), "i64", device)
-    workspace = create_workspace(device)
     
     # With this distribution and top_p=0.5, index 0 should be the only valid sample
     # (assuming index 0 prob > 0.5)
     for _ in range(50):
-        llaisys.Ops.random_sample(out_token_llaisys, logits_llaisys, workspace, 1.0, top_p, 0)
+        llaisys.Ops.random_sample(out_token_llaisys, logits_llaisys, 1.0, top_p, 0)
         token_id = get_output_token(out_token_llaisys, device)
         assert token_id == 0, f"Top-P failed: token {token_id} selected, expected 0"
         
@@ -135,10 +119,9 @@ def test_stability(device):
     
     logits_llaisys = create_llaisys_tensor(logits_torch, device)
     out_token, out_token_llaisys = zero_tensor((1,), "i64", device)
-    workspace = create_workspace(device)
 
     try:
-        llaisys.Ops.random_sample(out_token_llaisys, logits_llaisys, workspace, 0.01, 1.0, 0)
+        llaisys.Ops.random_sample(out_token_llaisys, logits_llaisys, 0.01, 1.0, 0)
         token_id = get_output_token(out_token_llaisys, device)
         
         # Should deterministically pick the max value (index 1) at very low temp
@@ -156,11 +139,10 @@ def test_determinism(device):
     
     logits_llaisys = create_llaisys_tensor(logits_torch, device)
     out_token, out_token_llaisys = zero_tensor((1,), "i64", device)
-    workspace = create_workspace(device)
 
     results = []
     for _ in range(20):
-        llaisys.Ops.random_sample(out_token_llaisys, logits_llaisys, workspace, 1.0, 1.0, 0)
+        llaisys.Ops.random_sample(out_token_llaisys, logits_llaisys, 1.0, 1.0, 0)
         token_id = get_output_token(out_token_llaisys, device)
         results.append(token_id)
         

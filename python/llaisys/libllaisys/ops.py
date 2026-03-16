@@ -38,7 +38,6 @@ def load_ops(lib):
     lib.llaisysRandomSample.argtypes = [
         llaisysTensor_t, # out_token
         llaisysTensor_t, # logits
-        llaisysTensor_t, # workspace
         c_float, # temp
         c_float, # top_p
         c_int    # top_k

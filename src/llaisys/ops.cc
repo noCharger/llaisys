@@ -41,7 +41,7 @@ __C {
     void llaisysSwiGLU(llaisysTensor_t out, llaisysTensor_t gate, llaisysTensor_t up) {
         llaisys::ops::swiglu(out->tensor, gate->tensor, up->tensor);
     }
-    void llaisysRandomSample(llaisysTensor_t out_token, llaisysTensor_t logits, llaisysTensor_t workspace, float temp, float top_p, int top_k) {
-        llaisys::ops::random_sample(out_token->tensor, logits->tensor, workspace ? workspace->tensor : nullptr, temp, top_p, top_k);
+    void llaisysRandomSample(llaisysTensor_t out_token, llaisysTensor_t logits, float temp, float top_p, int top_k) {
+        llaisys::ops::random_sample(out_token->tensor, logits->tensor, temp, top_p, top_k);
     }
 }

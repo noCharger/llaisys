@@ -32,9 +32,6 @@ struct LlaisysQwen2Session {
     
     // Current filled position in KV cache
     size_t pos;
-
-    // Workspace for sampling
-    llaisysTensor_t sampling_workspace;
 };
 
 static llaisysTensor_t create_tensor(size_t* shape, size_t ndim, llaisysDataType_t dtype, llaisysDeviceType_t device, int device_id) {
@@ -229,19 +226,12 @@ __export struct LlaisysQwen2Session *llaisysQwen2ModelCreateSession(struct Llais
         session->v_cache.push_back(create_weight(&model->meta, shape, 3, model->device_type, model->device_id));
     }
     
-    // Allocate sampling workspace (32MB)
-    size_t ws_size = 8388608; 
-    size_t ws_shape[1] = {ws_size};
-    session->sampling_workspace = create_tensor(ws_shape, 1, LLAISYS_DTYPE_F32, model->device_type, model->device_id);
-    
     return session;
 }
 
 __export void llaisysQwen2ModelDestroySession(struct LlaisysQwen2Session * session) {
     if (!session) return;
     
-    tensorDestroy(session->sampling_workspace);
-
     for (size_t i = 0; i < session->k_cache.size(); ++i) {
         tensorDestroy(session->k_cache[i]);
         tensorDestroy(session->v_cache[i]);
@@ -432,7 +422,7 @@ __export int64_t llaisysQwen2ModelForward(struct LlaisysQwen2Session * session, 
     size_t shape_out[1] = {1};
     llaisysTensor_t out_token = tensorCreate(shape_out, 1, LLAISYS_DTYPE_I64, model->device_type, model->device_id);
 
-    llaisysRandomSample(out_token, logits, session->sampling_workspace, temp, top_p, top_k);
+    llaisysRandomSample(out_token, logits, temp, top_p, top_k);
     
     int64_t result_token = 0;
     if (model->device_type == LLAISYS_DEVICE_CPU) {
