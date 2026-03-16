@@ -1,12 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
-const useChat = () => {
+const useChat = (apiKey) => {
     const [messages, setMessages] = useState([]);
     const [isThinking, setIsThinking] = useState(false);
     const [error, setError] = useState(null);
-    const [apiUrl, setApiUrl] = useState(''); 
+    const [apiUrl, setApiUrl] = useState('');
     const sessionId = useRef('session-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now());
-    
+
     const messagesRef = useRef(messages);
     useEffect(() => {
         messagesRef.current = messages;
@@ -31,8 +31,7 @@ const useChat = () => {
         if (!text.trim()) return;
 
         const userMsg = { role: 'user', content: text };
-        
-        // Optimistic update
+
         setMessages(prev => [...prev, userMsg]);
         setIsThinking(true);
         setError(null);
@@ -48,9 +47,17 @@ const useChat = () => {
 
             const history = [...messagesRef.current, userMsg];
 
+            const headers = { 'Content-Type': 'application/json' };
+            if (apiKey) {
+                headers['Authorization'] = `Bearer ${apiKey}`;
+            } else {
+
+                headers['x-tenant-id'] = 'dev-tenant';
+            }
+
             const response = await fetch(endpoint, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: headers,
                 body: JSON.stringify({
                     model: 'qwen2',
                     messages: history,
@@ -68,31 +75,31 @@ const useChat = () => {
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
-            
+
             setIsThinking(false);
-            
+
             let aiMsg = { role: 'assistant', content: '' };
             setMessages(prev => [...prev, aiMsg]);
-            
+
             let buffer = '';
 
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
-                
+
                 const chunk = decoder.decode(value, { stream: true });
                 buffer += chunk;
-                
+
                 const lines = buffer.split('\n');
-                buffer = lines.pop() || ''; 
-                
+                buffer = lines.pop() || '';
+
                 let deltaContent = '';
 
                 for (const line of lines) {
                     if (line.startsWith('data: ')) {
                         const jsonStr = line.substring(6).trim();
                         if (jsonStr === '[DONE]') break;
-                        
+
                         try {
                             const data = JSON.parse(jsonStr);
                             const delta = data.choices[0].delta.content || '';

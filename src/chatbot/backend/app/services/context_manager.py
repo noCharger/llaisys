@@ -23,10 +23,10 @@ class TaggedItem:
 
     def has_tag(self, tag: str) -> bool:
         return tag in self.tags
-    
+
     def has_any_tag(self, tags: List[str]) -> bool:
         return bool(self.tags.intersection(tags))
-    
+
     def has_all_tags(self, tags: List[str]) -> bool:
         return self.tags.issuperset(tags)
 
@@ -36,16 +36,14 @@ class ContextManager:
     """
     def __init__(self):
         self.items: Dict[str, TaggedItem] = {}
-        
-        # Initialize Jinja2 Environment
+
         self.env = Environment(
-            loader=BaseLoader(), # Use string templates
+            loader=BaseLoader(),
             autoescape=select_autoescape(),
             trim_blocks=True,
             lstrip_blocks=True
         )
-        
-        # Register custom filters
+
         self.env.filters['filter_by_tag'] = self.filter_by_tag
         self.env.filters['exclude_by_tag'] = self.exclude_by_tag
 
@@ -55,7 +53,7 @@ class ContextManager:
             tags = []
         if metadata is None:
             metadata = {}
-            
+
         item = TaggedItem(
             id=item_id,
             content=content,
@@ -126,17 +124,17 @@ if __name__ == "__main__":
     cm.add_item("rule1", "Always be polite.", ["behavior", "core"])
     cm.add_item("rule2", "Use concise language.", ["style", "core"])
     cm.add_item("fact1", "The sky is blue.", ["knowledge", "nature"])
-    
+
     template = """
     System Instructions:
     {% for item in context_items | filter_by_tag('core') %}
     - {{ item.content }}
     {% endfor %}
-    
+
     Knowledge:
     {% for item in context_items | filter_by_tag('knowledge') %}
     - {{ item.content }}
     {% endfor %}
     """
-    
+
     print(cm.render_template(template))

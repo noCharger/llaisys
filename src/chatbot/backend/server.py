@@ -29,17 +29,42 @@ try:
 except ImportError:
     llaisys = None
 
-from schemas import (
-    ChatMessage,
-    ChatCompletionRequest,
-    ChatCompletionResponseChoice,
-    ChatCompletionResponse,
-    ChatCompletionChunk,
-    ChatCompletionChunkChoice,
-    ChatCompletionChunkDelta,
-    ContextItemRequest
+from app.models.chat import (
+    Message as ChatMessage,
+    ChatRequest as ChatCompletionRequest,
+    ChatResponse as ChatCompletionResponse
 )
-from context_manager import ContextManager
+
+from pydantic import BaseModel
+from typing import List, Optional, Dict, Any
+
+class ChatCompletionResponseChoice(BaseModel):
+    index: int
+    message: ChatMessage
+    finish_reason: Optional[str] = None
+
+class ChatCompletionChunkDelta(BaseModel):
+    role: Optional[str] = None
+    content: Optional[str] = None
+
+class ChatCompletionChunkChoice(BaseModel):
+    index: int
+    delta: ChatCompletionChunkDelta
+    finish_reason: Optional[str] = None
+
+class ChatCompletionChunk(BaseModel):
+    id: str
+    object: str = "chat.completion.chunk"
+    created: int
+    model: str
+    choices: List[ChatCompletionChunkChoice]
+
+class ContextItemRequest(BaseModel):
+    id: str
+    content: str
+    tags: Optional[List[str]] = None
+    metadata: Optional[Dict[str, Any]] = None
+from app.services.context_manager import ContextManager
 
 try:
     from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
@@ -66,7 +91,7 @@ class ServerState:
         self.model_path: str = ""
         self.device_name: str = "cpu"
         self.dtype: Any = 0
-        self.max_sessions: int = 10 
+        self.max_sessions: int = 10
         self.max_steps: int = 4096
         self.default_system_prompt: str = (
             "You are a helpful AI assistant.\n"
@@ -77,7 +102,8 @@ class ServerState:
             "{% endfor %}\n"
             "Use the context above if relevant.\n"
             "{% endif %}\n"
-            "Answer the user clearly. If the task is complex, break it down logically."
+            "Answer the user clearly. Adapt the length and detail of your response to the nature of the user's query: "
+            "provide concise answers for simple questions, and detailed, step-by-step explanations for complex tasks."
         )
         self.max_context_len: int = 8192
         self.https_port: int = 0
@@ -107,25 +133,23 @@ def load_model() -> None:
 
     try:
         logger.info(f"Loading model from {state.model_path} on {state.device_name}...")
-        
-        # Set data type
+
         if hasattr(llaisys, "DataType"):
              state.dtype = llaisys.DataType.F16 if state.dtype == "float16" else llaisys.DataType.F32
-        
+
         device_type = llaisys.DeviceType.NVIDIA if state.device_name == "nvidia" else llaisys.DeviceType.CPU
-        
+
         state.model = llaisys.models.Qwen2(state.model_path, device_type, dtype=state.dtype)
         state.tokenizer = AutoTokenizer.from_pretrained(state.model_path, trust_remote_code=True)
-        
-        # Update max context length from model config if available
+
         if hasattr(state.model, "meta") and hasattr(state.model.meta, "maxseq"):
             state.max_context_len = state.model.meta.maxseq
             logger.info(f"Max context length set to {state.max_context_len}")
-            
+
         logger.info("Model loaded successfully.")
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
-        
+
 def cleanup_sessions():
     """Cleans up all active sessions."""
     if not state.model:
@@ -146,7 +170,7 @@ def get_session_for_request(input_ids: List[int], session_id: Optional[str] = No
     Thread-safe implementation with store_lock.
     """
     current_time = time.time()
-    
+
     with store_lock:
         if session_id and session_id in session_store:
             meta = session_store[session_id]
@@ -156,8 +180,7 @@ def get_session_for_request(input_ids: List[int], session_id: Optional[str] = No
 
             meta.last_accessed = current_time
             meta.in_use = True
-            
-            # Calculate prefix match
+
             match_len = 0
             min_len = min(len(meta.history_ids), len(input_ids))
             for i in range(min_len):
@@ -165,24 +188,22 @@ def get_session_for_request(input_ids: List[int], session_id: Optional[str] = No
                     match_len += 1
                 else:
                     break
-            
-            # Rewind if necessary
+
             if match_len < len(meta.history_ids):
                 logger.info(f"Rewinding session {session_id} from {len(meta.history_ids)} to {match_len}")
                 state.model.rewind_session(meta.session_ptr, match_len)
                 meta.history_ids = meta.history_ids[:match_len]
-                
+
             return meta, match_len
 
-        # Find the session with the longest common prefix among AVAILABLE sessions
         best_id = None
         best_meta = None
         best_len = 0
-        
+
         for sid, meta in session_store.items():
             if meta.in_use:
                 continue
-                
+
             match_len = 0
             min_len = min(len(meta.history_ids), len(input_ids))
             for i in range(min_len):
@@ -190,7 +211,7 @@ def get_session_for_request(input_ids: List[int], session_id: Optional[str] = No
                     match_len += 1
                 else:
                     break
-            
+
             if match_len > best_len:
                 best_len = match_len
                 best_id = sid
@@ -199,32 +220,31 @@ def get_session_for_request(input_ids: List[int], session_id: Optional[str] = No
         if best_meta is not None:
             if not session_id:
                 best_meta.last_accessed = current_time
-                best_meta.in_use = True  # Lock the session
-                
+                best_meta.in_use = True
+
                 if best_len < len(best_meta.history_ids):
                     state.model.rewind_session(best_meta.session_ptr, best_len)
                     best_meta.history_ids = best_meta.history_ids[:best_len]
                 return best_meta, best_len
 
-        # Check limits
         if len(session_store) >= state.max_sessions:
-            # Evict LRU from AVAILABLE sessions
+
             available_sessions = [s for s in session_store.items() if not s[1].in_use]
-            
+
             if not available_sessions:
                 raise HTTPException(status_code=503, detail="All sessions are busy and max capacity reached.")
-            
+
             oldest_sid, _ = min(available_sessions, key=lambda item: item[1].last_accessed)
-            
+
             logger.info(f"Evicting session {oldest_sid}")
             meta = session_store.pop(oldest_sid)
-            
+
             state.model.rewind_session(meta.session_ptr, 0)
             meta.history_ids = []
             meta.messages = []
             meta.last_accessed = current_time
             meta.in_use = True
-            
+
             new_sid = session_id if session_id else str(uuid.uuid4())
             session_store[new_sid] = meta
             return meta, 0
@@ -263,13 +283,13 @@ app.add_middleware(
 if OBSERVABILITY_ENABLED:
     REQUEST_COUNT = Counter("llaisys_requests_total", "Total requests", ["method", "endpoint", "status"])
     REQUEST_LATENCY = Histogram("llaisys_request_latency_seconds", "Request latency", ["method", "endpoint"])
-    
+
     @app.middleware("http")
     async def metrics_middleware(request: Request, call_next):
         start_time = time.time()
         method = request.method
         path = request.url.path
-        
+
         try:
             response = await call_next(request)
             status_code = response.status_code
@@ -280,7 +300,7 @@ if OBSERVABILITY_ENABLED:
             duration = time.time() - start_time
             REQUEST_COUNT.labels(method=method, endpoint=path, status=status_code).inc()
             REQUEST_LATENCY.labels(method=method, endpoint=path).observe(duration)
-            
+
         return response
 
     @app.get("/metrics")
@@ -302,12 +322,11 @@ def health_check():
 @app.get("/config")
 def get_config(request: Request):
     """Returns public configuration for the frontend."""
-    # Determine the API URL based on current request
+
     scheme = request.url.scheme
     host = request.url.hostname
     port = request.url.port
-    
-    # If running behind a proxy or in dev, this might need adjustment
+
     api_url = f"{scheme}://{host}:{port}"
     return {"apiUrl": api_url}
 
@@ -345,28 +364,28 @@ def prune_messages(messages: List[Dict[str, str]], tokenizer: Any, max_len: int)
     """Prunes messages to fit within context length."""
     if not messages:
         return messages
-        
+
     full_text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     full_tokens = tokenizer.encode(full_text)
-    
+
     if len(full_tokens) <= max_len:
         return messages
-        
+
     logger.info(f"Context length {len(full_tokens)} exceeds limit {max_len}. Pruning...")
-    
+
     pruned_msgs = list(messages)
     has_system = pruned_msgs[0]['role'] == 'system'
-    
+
     while len(full_tokens) > max_len and len(pruned_msgs) > (1 if has_system else 0):
-        # Remove the oldest message (after system prompt)
+
         idx_to_remove = 1 if has_system else 0
         if idx_to_remove >= len(pruned_msgs):
             break
-            
+
         pruned_msgs.pop(idx_to_remove)
         full_text = tokenizer.apply_chat_template(pruned_msgs, tokenize=False, add_generation_prompt=True)
         full_tokens = tokenizer.encode(full_text)
-        
+
     logger.info(f"Pruned context to {len(full_tokens)} tokens")
     return pruned_msgs
 
@@ -377,16 +396,16 @@ async def generate_response_stream(
     max_gen: int
 ) -> AsyncGenerator[str, None]:
     """Generator for streaming responses."""
-    
+
     response_id = str(uuid.uuid4())
     created_time = int(time.time())
     model_name = request.model
-    
+
     def create_chunk(content: Optional[str] = None, role: Optional[str] = None, finish_reason: Optional[str] = None):
         delta = ChatCompletionChunkDelta()
         if role: delta.role = role
         if content: delta.content = content
-        
+
         chunk = ChatCompletionChunk(
             id=response_id,
             created=created_time,
@@ -399,21 +418,19 @@ async def generate_response_stream(
         )
         return f"data: {chunk.model_dump_json()}\n\n"
 
-    # Initial chunk with role
     try:
         yield create_chunk(role="assistant")
-        
+
         current_tokens = list(new_input_ids)
         full_content = ""
-        
-        # 1. Prefill
+
         if len(current_tokens) > 0:
             try:
                 next_token = state.model.forward(
-                    session_meta.session_ptr, 
-                    current_tokens, 
-                    request.temperature or state.temperature, 
-                    request.top_p or state.top_p, 
+                    session_meta.session_ptr,
+                    current_tokens,
+                    request.temperature or state.temperature,
+                    request.top_p or state.top_p,
                     request.top_k or state.top_k
                 )
             except Exception as e:
@@ -422,23 +439,22 @@ async def generate_response_stream(
                 return
 
             session_meta.history_ids.append(next_token)
-            
-            if next_token == getattr(state.model, "end_token", 2): # Default EOS if not set
+
+            if next_token == getattr(state.model, "end_token", 2):
                 session_meta.messages.append({"role": "assistant", "content": full_content})
                 yield create_chunk(finish_reason="stop")
                 yield "data: [DONE]\n\n"
                 return
 
             text = state.tokenizer.decode([next_token], skip_special_tokens=False)
-            
+
             if text:
                 full_content += text
                 yield create_chunk(content=text)
 
-        # 2. Decode Loop
         for _ in range(max_gen - 1):
             last_token = session_meta.history_ids[-1]
-            
+
             try:
                 next_token = state.model.forward(
                     session_meta.session_ptr,
@@ -450,9 +466,9 @@ async def generate_response_stream(
             except Exception as e:
                 logger.error(f"Error during generation: {e}")
                 break
-            
+
             session_meta.history_ids.append(next_token)
-            
+
             if next_token == getattr(state.model, "end_token", 2):
                 session_meta.messages.append({"role": "assistant", "content": full_content})
                 yield create_chunk(finish_reason="stop")
@@ -460,12 +476,11 @@ async def generate_response_stream(
                 return
 
             text = state.tokenizer.decode([next_token], skip_special_tokens=False)
-            
+
             if text:
                 full_content += text
                 yield create_chunk(content=text)
-                
-        # Reached max tokens
+
         session_meta.messages.append({"role": "assistant", "content": full_content})
         yield create_chunk(finish_reason="length")
         yield "data: [DONE]\n\n"
@@ -479,22 +494,19 @@ async def chat_completions(request: ChatCompletionRequest):
         raise HTTPException(status_code=503, detail="Model not loaded")
 
     try:
-        # Prepare messages
+
         req_messages = [m.model_dump() for m in request.messages]
-        
+
         max_gen = request.max_tokens or 4096
         if max_gen > state.max_steps:
              max_gen = state.max_steps
-        
-        # Calculate available context
+
         max_input = state.max_context_len - max_gen
         messages = prune_messages(req_messages, state.tokenizer, max_input)
-        
-        # System prompt handling
+
         has_system_prompt = len(messages) > 0 and messages[0].get("role") == "system"
         sys_prompt_content = request.system_prompt if request.system_prompt else state.default_system_prompt
 
-        # Render system prompt if template usage is requested
         if request.use_template and sys_prompt_content:
             try:
                 logger.info("Rendering system prompt template...")
@@ -502,44 +514,40 @@ async def chat_completions(request: ChatCompletionRequest):
             except Exception as e:
                 logger.error(f"Failed to render system prompt template: {e}")
                 raise HTTPException(status_code=400, detail=f"Template error: {str(e)}")
-        
+
         if not has_system_prompt and sys_prompt_content:
             messages.insert(0, {"role": "system", "content": sys_prompt_content})
         elif has_system_prompt and request.system_prompt:
             messages[0]["content"] = request.system_prompt
 
-        # Tokenize
         prompt = state.tokenizer.apply_chat_template(
             conversation=messages,
             add_generation_prompt=True,
             tokenize=False
         )
         input_ids = state.tokenizer.encode(prompt)
-        
-        # Session Management
+
         session_meta, match_len = get_session_for_request(input_ids, session_id=request.session_id)
-        
+
         try:
             session_meta.messages = messages
-            
+
             new_input_ids = input_ids[match_len:]
             session_meta.history_ids.extend(new_input_ids)
-            
-            # Generation
+
             stream_gen = generate_response_stream(request, session_meta, new_input_ids, max_gen)
-            
+
             if request.stream:
                 return StreamingResponse(stream_gen, media_type="text/event-stream")
             else:
-                # Collect full response
+
                 full_content = ""
                 finish_reason = "length"
-                
+
                 async for chunk_str in stream_gen:
                     if chunk_str.strip() == "data: [DONE]":
                         break
-                    
-                    # Parse "data: {...}"
+
                     if chunk_str.startswith("data: "):
                         json_str = chunk_str[6:].strip()
                         try:
@@ -551,7 +559,7 @@ async def chat_completions(request: ChatCompletionRequest):
                                 finish_reason = chunk_data["choices"][0]["finish_reason"]
                         except:
                             pass
-                
+
                 return ChatCompletionResponse(
                     id=str(uuid.uuid4()),
                     created=int(time.time()),
@@ -620,7 +628,6 @@ if __name__ == "__main__":
         logger.error("Model path is required via --model or config file")
         sys.exit(1)
 
-    # Download if needed
     if not os.path.exists(state.model_path) and not os.path.isdir(state.model_path) and snapshot_download:
         logger.info(f"Model path {state.model_path} not found locally, attempting HF download...")
         try:
@@ -632,13 +639,13 @@ if __name__ == "__main__":
     cert_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'certs'))
     key_path = os.path.join(cert_dir, 'key.pem')
     cert_path = os.path.join(cert_dir, 'cert.pem')
-    
+
     ssl_configured = False
     if not args.no_https:
         if not (os.path.exists(key_path) and os.path.exists(cert_path)):
             os.makedirs(cert_dir, exist_ok=True)
             logger.info("Generating self-signed certificate...")
-            # Use absolute paths in openssl command
+
             cmd = f'openssl req -x509 -newkey rsa:4096 -keyout "{key_path}" -out "{cert_path}" -days 365 -nodes -subj "/CN=localhost" 2>/dev/null'
             if os.system(cmd) == 0:
                 ssl_configured = True
@@ -646,27 +653,27 @@ if __name__ == "__main__":
                 logger.error("Failed to generate certificates. Fallback to HTTP.")
         else:
             ssl_configured = True
-    
+
     if ssl_configured:
         https_port = port + 1
         state.https_port = https_port
-        
+
         async def run_servers():
             config_https = uvicorn.Config(
-                app, host=host, port=https_port, 
+                app, host=host, port=https_port,
                 ssl_keyfile=key_path, ssl_certfile=cert_path,
                 log_level="info"
             )
             config_http = uvicorn.Config(http_app, host=host, port=port, log_level="warning")
-            
+
             logger.info(f"Starting HTTPS server on {host}:{https_port}")
             logger.info(f"Starting HTTP redirect server on {host}:{port}")
-            
+
             server_https = uvicorn.Server(config_https)
             server_http = uvicorn.Server(config_http)
-            
+
             await asyncio.gather(server_https.serve(), server_http.serve())
-            
+
         asyncio.run(run_servers())
     else:
         logger.warning("Running in HTTP mode (no SSL).")
