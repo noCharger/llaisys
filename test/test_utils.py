@@ -279,10 +279,14 @@ def torch_dtype(dtype_name: str):
         return torch.float64
     elif dtype_name == "bf16":
         return torch.bfloat16
+    elif dtype_name == "i8":
+        return torch.int8
     elif dtype_name == "i32":
         return torch.int32
     elif dtype_name == "i64":
         return torch.int64
+    elif dtype_name == "u8":
+        return torch.uint8
     elif dtype_name == "u32":
         return torch.uint32
     elif dtype_name == "u64":
@@ -302,10 +306,14 @@ def llaisys_dtype(dtype_name: str):
         return llaisys.DataType.F64
     elif dtype_name == "bf16":
         return llaisys.DataType.BF16
+    elif dtype_name == "i8":
+        return llaisys.DataType.I8
     elif dtype_name == "i32":
         return llaisys.DataType.I32
     elif dtype_name == "i64":
         return llaisys.DataType.I64
+    elif dtype_name == "u8":
+        return llaisys.DataType.U8
     elif dtype_name == "u32":
         return llaisys.DataType.U32
     elif dtype_name == "u64":
@@ -325,10 +333,14 @@ def dtype_name(llaisys_dtype: llaisys.DataType):
         return "f64"
     elif llaisys_dtype == llaisys.DataType.BF16:
         return "bf16"
+    elif llaisys_dtype == llaisys.DataType.I8:
+        return "i8"
     elif llaisys_dtype == llaisys.DataType.I32:
         return "i32"
     elif llaisys_dtype == llaisys.DataType.I64:
         return "i64"
+    elif llaisys_dtype == llaisys.DataType.U8:
+        return "u8"
     elif llaisys_dtype == llaisys.DataType.U32:
         return "u32"
     elif llaisys_dtype == llaisys.DataType.U64:

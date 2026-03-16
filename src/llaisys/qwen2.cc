@@ -32,6 +32,9 @@ struct LlaisysQwen2Session {
     
     // Current filled position in KV cache
     size_t pos;
+
+    // Workspace for sampling
+    llaisysTensor_t sampling_workspace;
 };
 
 static llaisysTensor_t create_tensor(size_t* shape, size_t ndim, llaisysDataType_t dtype, llaisysDeviceType_t device, int device_id) {
@@ -226,12 +229,19 @@ __export struct LlaisysQwen2Session *llaisysQwen2ModelCreateSession(struct Llais
         session->v_cache.push_back(create_weight(&model->meta, shape, 3, model->device_type, model->device_id));
     }
     
+    // Allocate sampling workspace (32MB)
+    size_t ws_size = 8388608; 
+    size_t ws_shape[1] = {ws_size};
+    session->sampling_workspace = create_tensor(ws_shape, 1, LLAISYS_DTYPE_F32, model->device_type, model->device_id);
+    
     return session;
 }
 
 __export void llaisysQwen2ModelDestroySession(struct LlaisysQwen2Session * session) {
     if (!session) return;
     
+    tensorDestroy(session->sampling_workspace);
+
     for (size_t i = 0; i < session->k_cache.size(); ++i) {
         tensorDestroy(session->k_cache[i]);
         tensorDestroy(session->v_cache[i]);
@@ -270,7 +280,6 @@ __export int64_t llaisysQwen2ModelForward(struct LlaisysQwen2Session * session, 
     llaisysEmbedding(x, tokens, model->weights.in_embed);
     tensorDestroy(tokens);
     
-    // 2. Layers
     for (size_t i = 0; i < model->meta.nlayer; ++i) {
         llaisysTensor_t x_norm = tensorCreate(shape_embed, 2, model->meta.dtype, model->device_type, model->device_id);
         llaisysRmsNorm(x_norm, x, model->weights.attn_norm_w[i], model->meta.epsilon);
@@ -420,25 +429,19 @@ __export int64_t llaisysQwen2ModelForward(struct LlaisysQwen2Session * session, 
     
     llaisysLinear(logits, last_token_state, model->weights.out_embed, model->zero_bias_voc);
     
-    // Copy logits to host for sampling
-    size_t shape_logits_host[2] = {1, model->meta.voc};
-    llaisysTensor_t host_logits = tensorCreate(shape_logits_host, 2, model->meta.dtype, LLAISYS_DEVICE_CPU, 0);
-    
-    size_t elem_size = (model->meta.dtype == LLAISYS_DTYPE_F32) ? 4 : 2;
-    
-    const auto runtime = llaisysGetRuntimeAPI(model->device_type);
-    runtime->memcpy_sync(tensorGetData(host_logits), tensorGetData(logits), 
-                         model->meta.voc * elem_size, 
-                         LLAISYS_MEMCPY_D2H);
-
     size_t shape_out[1] = {1};
-    llaisysTensor_t out_token = tensorCreate(shape_out, 1, LLAISYS_DTYPE_I64, LLAISYS_DEVICE_CPU, 0);
+    llaisysTensor_t out_token = tensorCreate(shape_out, 1, LLAISYS_DTYPE_I64, model->device_type, model->device_id);
 
-    llaisysRandomSample(out_token, host_logits, temp, top_p, top_k);
+    llaisysRandomSample(out_token, logits, session->sampling_workspace, temp, top_p, top_k);
     
-    int64_t result_token = *(int64_t*)tensorGetData(out_token);
+    int64_t result_token = 0;
+    if (model->device_type == LLAISYS_DEVICE_CPU) {
+        result_token = *(int64_t*)tensorGetData(out_token);
+    } else {
+        const auto runtime = llaisysGetRuntimeAPI(model->device_type);
+        runtime->memcpy_sync(&result_token, tensorGetData(out_token), sizeof(int64_t), LLAISYS_MEMCPY_D2H);
+    }
     
-    tensorDestroy(host_logits);
     tensorDestroy(out_token);
     
     tensorDestroy(x_final);

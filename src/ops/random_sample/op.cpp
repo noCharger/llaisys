@@ -84,7 +84,7 @@ void validate_random_sample_tensors(const tensor_t& out_token, const tensor_t& l
 
 } // namespace
 
-void random_sample(tensor_t out_token, tensor_t logits, float temp, float top_p, int top_k) {
+void random_sample(tensor_t out_token, tensor_t logits, tensor_t workspace, float temp, float top_p, int top_k) {
     validate_random_sample_tensors(out_token, logits);
 
     if (logits->deviceType() == LLAISYS_DEVICE_CPU) {
@@ -103,12 +103,14 @@ void random_sample(tensor_t out_token, tensor_t logits, float temp, float top_p,
         }
     }
 
-    // Non-CPU devices
     llaisys::core::context().setDevice(logits->deviceType(), logits->deviceId());
     
 #ifdef ENABLE_NVIDIA_API
     if (logits->deviceType() == LLAISYS_DEVICE_NVIDIA) {
-        nvidia::random_sample(out_token, logits, temp, top_p, top_k);
+        if (!workspace) {
+             throw std::runtime_error("RandomSample NVIDIA: Workspace is required");
+        }
+        nvidia::random_sample(out_token, logits, workspace, temp, top_p, top_k);
         return;
     }
 #endif

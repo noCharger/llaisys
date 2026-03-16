@@ -109,7 +109,7 @@ target("llaisys")
         if is_plat("linux") then
             add_deps("llaisys-ops-nvidia")
             add_deps("llaisys-device-nvidia")
-            add_links("cublas")
+            add_links("cublas", "curand")
         end
         add_rules("cuda")
         
