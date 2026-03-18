@@ -18,8 +18,9 @@ def test_setup():
 @pytest.mark.anyio
 async def test_e2e_chat_completion():
 
-    if hasattr(tenant_manager, '_tenants'):
-        tenant_manager._tenants.clear()
+    if hasattr(tenant_manager.storage, '_tenants_db'):
+        tenant_manager.storage._tenants_db.clear()
+        tenant_manager.storage._keys_db.clear()
     if hasattr(rate_limiter, 'buckets'):
         rate_limiter.buckets.clear()
 

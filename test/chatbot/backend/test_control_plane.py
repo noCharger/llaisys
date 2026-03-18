@@ -5,10 +5,11 @@ from unittest.mock import MagicMock, AsyncMock, patch
 from chatbot.backend.app.models.tenant import Tenant, TenantCreate, TenantUpdate, Quota
 from chatbot.backend.app.services.tenant_manager import TenantManager
 from chatbot.backend.app.services.rate_limiter import RateLimiter
+from chatbot.backend.app.services.storage import MockRedisStorage
 
 @pytest.fixture
 def tenant_manager():
-    return TenantManager()
+    return TenantManager(storage=MockRedisStorage())
 
 @pytest.fixture
 async def rate_limiter(tenant_manager):

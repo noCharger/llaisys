@@ -9,7 +9,8 @@ class Quota(BaseModel):
     kv_pool_slice: int = 1024
 
 class APIKey(BaseModel):
-    key: str
+    key_hash: str
+    prefix: str
     created_at: datetime = Field(default_factory=datetime.now)
     is_active: bool = True
 

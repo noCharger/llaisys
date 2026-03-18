@@ -17,6 +17,11 @@ from fastapi.responses import Response, RedirectResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
+# Integration of Control Plane components
+from app.routers import admin
+from app.dependencies import tenant_manager, rate_limiter
+from app.middleware.auth import AuthMiddleware
+
 from transformers import AutoTokenizer
 
 try:
@@ -258,6 +263,9 @@ def get_session_for_request(input_ids: List[int], session_id: Optional[str] = No
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Inject tenant_manager for dependency injection in routers
+    app.state.tenant_manager = tenant_manager
+    
     load_model()
     yield
     cleanup_sessions()
@@ -279,6 +287,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Integrate Control Plane (Tenant/Auth) features
+app.add_middleware(AuthMiddleware, tenant_manager=tenant_manager, rate_limiter=rate_limiter)
+app.include_router(admin.router, prefix="/v1")
 
 if OBSERVABILITY_ENABLED:
     REQUEST_COUNT = Counter("llaisys_requests_total", "Total requests", ["method", "endpoint", "status"])
