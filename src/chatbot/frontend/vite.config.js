@@ -6,14 +6,19 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://localhost:6006',
+        target: 'http://127.0.0.1:6008',
         changeOrigin: true,
       },
       '/config': {
-        target: 'http://localhost:6006',
+        target: 'http://127.0.0.1:6008',
+        changeOrigin: true,
+      },
+      '/v1': {
+        target: 'http://127.0.0.1:6008',
         changeOrigin: true,
       }
-    }
+    },
+    allowedHosts: 'all',
   },
   test: {
     globals: true,

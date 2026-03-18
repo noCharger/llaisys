@@ -1,3 +1,4 @@
+from fastapi import Request
 from .services.tenant_manager import TenantManager
 from .services.model_service import ModelService
 from .services.scheduler import ClipperScheduler
@@ -16,8 +17,8 @@ session_dao = SessionDAO()
 context_manager = ContextManager()
 chat_service = ChatService(scheduler, session_dao, context_manager)
 
-def get_tenant_manager() -> TenantManager:
-    return tenant_manager
+def get_tenant_manager(request: Request) -> TenantManager:
+    return request.app.state.tenant_manager
 
 def get_rate_limiter() -> RateLimiter:
     return rate_limiter
