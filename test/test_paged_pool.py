@@ -62,16 +62,16 @@ def test_basic_lifecycle():
     assert pool.n_pages == 4
     assert pool.page_size == 16
     assert pool.global_pages_free == 4
-    # Override the default 25% quota — tiny pool needs full access.
+    # Override the default 25% quota; this tiny pool needs full access.
     pool.set_tenant_quota("tenantA", 0, 4, 4)
 
     bid, matched = pool.acquire("tenantA", prefix_tokens=[1, 2, 3])
     assert bid >= 0 and matched == 0
-    # No tokens written yet → no pages allocated.
+    # No tokens written yet, so no pages allocated.
     assert pool.page_table(bid) == []
     assert pool.tenant_pages_used("tenantA") == 0
 
-    # Append 5 tokens — needs ceil(5/16) = 1 page.
+    # Append 5 tokens needs ceil(5/16) = 1 page.
     slots = pool.append(bid, 5)
     assert len(slots) == 5
     assert pool.tenant_pages_used("tenantA") == 1
@@ -83,7 +83,7 @@ def test_basic_lifecycle():
         assert page_id == pt[0]
         assert offset == i
 
-    # Append 30 more → cursor 5..35 → spans pages [0..16),[16..32),[32..35) → 3 pages total.
+    # Append 30 more advances cursor 5..35 across 3 pages of size 16.
     slots2 = pool.append(bid, 30)
     pt = pool.page_table(bid)
     assert len(pt) == 3, f"expected 3 pages after 35 tokens, got {len(pt)}"
@@ -92,7 +92,7 @@ def test_basic_lifecycle():
 
     pool.release(bid)
     # Released pages stay tagged with tenant; tenant_pages_used unchanged
-    # because they're now in tenant.lru_free (still counted as in use by quota).
+    # because they sit in tenant.lru_free and still count against quota.
     assert pool.tenant_pages_used("tenantA") == 3
 
 
@@ -112,13 +112,13 @@ def test_prefix_share_increments_ref_count():
     assert len(pages_after_session1) == 2
     pool.release(bid1)
 
-    # Session 2 same tenant + same prefix → should match both pages.
+    # Session 2 with same tenant and same prefix should match both pages.
     bid2, m2 = pool.acquire("T", prefix_tokens=prefix + [99, 100])
     assert m2 == 32, f"expected 32-token chain match, got {m2}"
     pages_session2 = pool.page_table(bid2)
     assert pages_session2 == pages_after_session1, \
         f"expected same pages reused, got {pages_session2} vs {pages_after_session1}"
-    # tenant_pages_used should NOT increase (we share existing pages).
+    # tenant_pages_used should NOT increase since we share existing pages.
     assert pool.tenant_pages_used("T") == 2, \
         f"expected 2 pages in use, got {pool.tenant_pages_used('T')}"
 
@@ -130,11 +130,11 @@ def test_quota_enforcement():
     pool.set_tenant_quota("X", reservation_floor=0, max_pages=2, burst_pages=0)
 
     bid, _ = pool.acquire("X", prefix_tokens=[])
-    # Append 32 tokens → 2 pages → fits exactly within quota.
+    # Append 32 tokens fills 2 pages, exactly within quota.
     pool.append(bid, 32)
     assert pool.tenant_pages_used("X") == 2
 
-    # 1 more token → would need a 3rd page → must fail (max_pages=2).
+    # 1 more token would need a 3rd page and must fail at max_pages=2.
     try:
         pool.append(bid, 1)
         raised = False
@@ -148,8 +148,8 @@ def test_cross_tenant_wipe():
     print("   cross-tenant takeover zero-wipes the page")
     m = _StubModel()
     pool = PagedKVCache(m, n_pages=2, page_size=16, max_pages_per_request=4)
-    # Default tenant quotas: each can use up to 25% of n_pages = 0 (rounded).
-    # Set explicit quotas large enough to exercise both tenants.
+    # Default tenant quotas would round 25% of n_pages down to 0, so set
+    # explicit quotas large enough to exercise both tenants.
     pool.set_tenant_quota("A", 0, 2, 2)
     pool.set_tenant_quota("B", 0, 2, 2)
 
@@ -165,9 +165,9 @@ def test_cross_tenant_wipe():
     LIB_LLAISYS.tensorDestroy(t)
 
     pool.release(bid_a)
-    # No global free pages now — A holds both via lru_free. B can't get anything
-    # without cross-tenant eviction. With reservation_floor=0 for A, eviction
-    # is permitted and must zero-wipe.
+    # No global free pages now. A holds both via lru_free, so B must trigger
+    # cross-tenant eviction. A has reservation_floor=0, so eviction is allowed
+    # and must zero-wipe before handing the page to B.
     bid_b, _ = pool.acquire("B", prefix_tokens=[])
     pool.append(bid_b, 16)  # 1 page
     pages_b = pool.page_table(bid_b)
@@ -175,6 +175,38 @@ def test_cross_tenant_wipe():
     vals = _read_page_first_word(pool, pages_b[0])
     assert all(abs(v) < 1e-9 for v in vals), \
         f"cross-tenant page {pages_b[0]} not wiped: {vals}"
+
+
+def test_cross_tenant_prefix_sharing():
+    """Two tenants submitting the same prefix share the same physical pages.
+
+    The chain-hash index is global, not partitioned by tenant. Identical
+    input tokens produce bit-identical KV under a deterministic forward,
+    so cross-tenant sharing is safe. Tenant isolation is enforced at auth,
+    quota, and request routing layers, not by forbidding the cache hit.
+    """
+    print("   cross-tenant prefix match via global chain index")
+    m = _StubModel()
+    pool = PagedKVCache(m, n_pages=4, page_size=16, max_pages_per_request=4)
+    pool.set_tenant_quota("A", 0, 4, 4)
+    pool.set_tenant_quota("B", 0, 4, 4)
+
+    # Tenant A writes a 32-token prefix and commits.
+    prefix = list(range(500, 532))
+    bid_a, m1 = pool.acquire("A", prefix_tokens=prefix)
+    assert m1 == 0
+    pool.append(bid_a, 32)
+    pool.commit(bid_a, new_pos=32, tokens=prefix)
+    pages_a = pool.page_table(bid_a)
+    assert len(pages_a) == 2
+    pool.release(bid_a)
+
+    # Tenant B with the SAME prefix MUST hit the cache.
+    bid_b, m2 = pool.acquire("B", prefix_tokens=prefix + [99, 100])
+    assert m2 == 32, f"expected 32-token chain match, got {m2}"
+    pages_b = pool.page_table(bid_b)
+    assert pages_b == pages_a, \
+        f"expected B to reuse A's pages, got {pages_b} vs {pages_a}"
 
 
 def test_global_free_list_consistency():
@@ -195,11 +227,23 @@ def test_global_free_list_consistency():
     assert pool.tenant_pages_used("Z") == 2
 
 
+def _registered_tests():
+    return [
+        test_basic_lifecycle,
+        test_prefix_share_increments_ref_count,
+        test_quota_enforcement,
+        test_cross_tenant_wipe,
+        test_cross_tenant_prefix_sharing,
+        test_global_free_list_consistency,
+    ]
+
+
 if __name__ == "__main__":
     print("Testing PagedKVCache")
     test_basic_lifecycle()
     test_prefix_share_increments_ref_count()
     test_quota_enforcement()
     test_cross_tenant_wipe()
+    test_cross_tenant_prefix_sharing()
     test_global_free_list_consistency()
     print("\033[92mTest passed!\033[0m\n")

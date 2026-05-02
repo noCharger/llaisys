@@ -5,6 +5,7 @@
 #include "../../utils/check.hpp"
 
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 #ifdef ENABLE_NVIDIA_API

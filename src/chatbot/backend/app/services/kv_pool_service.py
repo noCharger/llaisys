@@ -1,7 +1,12 @@
-"""KV Cache Pool service. Tenant-scoped wrapper around the C++ pool.
+"""KV cache pool service. Tenant-scoped wrapper around the C++ pool.
 
-Two modes: `paged` (real PagedKVCache) and `stub` (in-memory dict for tests).
-Quotas are pulled from TenantManager and pushed into the C pool on first use.
+The C pool tracks pages_in_use per tenant for quota. The prefix index is
+global. Cross-tenant prefix sharing is safe because identical input tokens
+produce identical KV under a deterministic forward.
+
+Two modes: paged backed by PagedKVCache, and stub backed by an in-memory
+dict for tests. Quotas are pulled from TenantManager and pushed into the
+C pool on first use.
 """
 from __future__ import annotations
 
@@ -30,7 +35,7 @@ class KVPoolService:
                  n_blocks: int = 0, max_len_per_block: int = 0,
                  tenant_manager: Optional[Any] = None,
                  pool: Optional[Any] = None):
-        """paged_pool=None → stub mode with n_blocks slots."""
+        """paged_pool=None means stub mode with n_blocks slots."""
         if pool is not None:
             logger.warning("KVPoolService: 'pool=' argument is removed; ignored.")
 
@@ -71,7 +76,7 @@ class KVPoolService:
         """Real backend (paged) for model_service.forward; None in stub mode."""
         return self._paged
 
-    # ---------- per-tenant quota (paged mode) ----------
+    # ---------- per-tenant quota, paged mode ----------
 
     def _ensure_paged_quota(self, tenant_id: str):
         """Push tenant.quotas into the C pool on first use; idempotent."""
@@ -98,7 +103,7 @@ class KVPoolService:
             )
         self._paged_quota_applied.add(tenant_id)
 
-    # ---------- entry points (tenant_id mandatory) ----------
+    # ---------- entry points; tenant_id is mandatory ----------
 
     def acquire(self, tenant_id: str,
                 prefix_tokens: Optional[List[int]] = None) -> Tuple[int, int]:
@@ -114,7 +119,7 @@ class KVPoolService:
                 self._paged_block_tenants[bid] = tenant_id
             return bid, matched
 
-        # Stub: best-fit prefix match, else free, else LRU (cross-tenant wipe).
+        # Stub: best-fit prefix match, else free, else LRU with cross-tenant wipe.
         with self._lock:
             return self._stub_acquire(tenant_id, prefix_tokens)
 
@@ -214,18 +219,18 @@ class KVPoolService:
     _CHUNK = 16  # match C++ pool's chunk granularity
 
     def _stub_acquire(self, tenant_id: str, prefix_tokens: List[int]):
+        # Mirrors the C++ pool: prefix matching is global, only quota is
+        # per-tenant.
         best_match_id = -1
         best_match_len = 0
         free_id = -1
-        same_tenant_id = -1
-        same_tenant_lru = float("inf")
-        lru_other_id = -1
-        lru_other_ts = float("inf")
+        lru_id = -1
+        lru_ts = float("inf")
 
         for i, b in enumerate(self._stub_blocks):
             if b.in_use:
                 continue
-            if b.tenant_id == tenant_id and b.prefix and prefix_tokens:
+            if b.prefix and prefix_tokens:
                 lcp_tok = _lcp(b.prefix, prefix_tokens)
                 if lcp_tok > b.pos:
                     lcp_tok = b.pos
@@ -236,35 +241,27 @@ class KVPoolService:
             if b.tenant_id == "":
                 if free_id < 0:
                     free_id = i
-            elif b.tenant_id == tenant_id:
-                if b.last_used_ns < same_tenant_lru:
-                    same_tenant_lru = b.last_used_ns
-                    same_tenant_id = i
-            else:
-                if b.last_used_ns < lru_other_ts:
-                    lru_other_ts = b.last_used_ns
-                    lru_other_id = i
+            elif b.last_used_ns < lru_ts:
+                lru_ts = b.last_used_ns
+                lru_id = i
 
         chosen = -1
         matched = 0
         if best_match_id >= 0 and best_match_len > 0:
             chosen = best_match_id
             matched = best_match_len
+            # Reassign to the new tenant so quota follows the live ref.
+            self._stub_blocks[chosen].tenant_id = tenant_id
         elif free_id >= 0:
             chosen = free_id
             b = self._stub_blocks[chosen]
             b.tenant_id = tenant_id
             b.pos = 0
             b.prefix = []
-        elif same_tenant_id >= 0:
-            chosen = same_tenant_id
+        elif lru_id >= 0:
+            chosen = lru_id
             b = self._stub_blocks[chosen]
-            b.pos = 0
-            b.prefix = []
-        elif lru_other_id >= 0:
-            chosen = lru_other_id
-            b = self._stub_blocks[chosen]
-            b.tenant_id = tenant_id  # cross-tenant wipe simulated
+            b.tenant_id = tenant_id
             b.pos = 0
             b.prefix = []
         else:

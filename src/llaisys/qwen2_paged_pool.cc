@@ -1,7 +1,12 @@
-// PagedAttention-style KV cache pool: shared physical pages, per-request
-// block tables, ref-counted CoW, per-tenant quotas (reservation_floor /
-// max_pages / burst_pages), per-tenant chain-hash prefix index (16-token
-// chunks, FNV-1a). Cross-tenant page takeover zero-wipes.
+// PagedAttention KV cache pool. Shared physical pages, per-request block
+// tables, ref-counted CoW, per-tenant quotas, and a global content-addressed
+// prefix index using an FNV-1a chain hash over 16-token chunks. Cross-tenant
+// page takeover zero-wipes the page contents.
+//
+// Prefix sharing crosses tenants. Identical input tokens deterministically
+// produce identical KV, so cross-tenant prefix matching is pure memoization
+// and never leaks data. Tenant isolation is enforced at auth, quota, and
+// request routing layers, not by partitioning the prefix index.
 
 #include "llaisys/models/qwen2.h"
 #include "llaisys/runtime.h"
@@ -17,7 +22,7 @@
 #include <unordered_map>
 #include <vector>
 
-// Must match the definition in qwen2.cc (ODR).
+// Must match the definition in qwen2.cc per ODR.
 struct LlaisysQwen2Model {
     LlaisysQwen2Meta meta;
     LlaisysQwen2Weights weights;
@@ -68,9 +73,9 @@ struct TenantState {
     size_t max_pages = SIZE_MAX;
     size_t burst_pages = SIZE_MAX;
 
-    size_t pages_in_use = 0;         // ref_count > 0 OR in this tenant's free pool
-    std::unordered_map<uint64_t /*chain_hash*/, int32_t /*page_id*/> hash_to_page;
+    size_t pages_in_use = 0;         // ref_count > 0 or in this tenant's free pool
     std::deque<int32_t> lru_free;    // released pages still tagged as this tenant
+    // Prefix index lives on the pool, not here. See file header.
 };
 
 struct RequestBlock {
@@ -78,7 +83,7 @@ struct RequestBlock {
     bool in_use = false;
     size_t pos = 0;                  // committed token count
     std::vector<int32_t> page_table; // size = ceil(pos / page_size)
-    std::vector<int64_t> prefix;     // up to kPrefixTrack tokens (for re-hashing on Commit)
+    std::vector<int64_t> prefix;     // up to kPrefixTrack tokens, used by Commit to re-hash
 };
 
 } // anonymous namespace
@@ -96,7 +101,7 @@ struct LlaisysQwen2PagedPool {
     int device_id = 0;
 
     // One big K and V tensor per layer of shape [n_pages * page_size, nkvh, dh].
-    // A page's slice is at offset [page_id * page_size, (page_id+1) * page_size).
+    // Page page_id occupies the slice [page_id * page_size, page_id * page_size + page_size).
     std::vector<llaisysTensor_t> big_k;
     std::vector<llaisysTensor_t> big_v;
 
@@ -105,13 +110,18 @@ struct LlaisysQwen2PagedPool {
     std::deque<int32_t> global_free_list;   // pages with tenant_id == 0
     std::unordered_map<uint64_t, TenantState> tenants;
 
+    // Global content-addressed prefix index. Each chain_hash maps to the
+    // page that holds those exact prefix tokens, regardless of original
+    // owner. Cross-tenant sharing is safe by determinism. See file header.
+    std::unordered_map<uint64_t /*chain_hash*/, int32_t /*page_id*/> hash_to_page;
+
     std::mutex mu;
     uint64_t lru_counter = 0;
 };
 
 namespace {
 
-// Caller must NOT hold pool->mu (D2D copy can be slow on CUDA).
+// Caller must NOT hold pool->mu. The D2D copy can be slow on CUDA.
 void copy_page(LlaisysQwen2PagedPool *pool, int32_t src_page_id, int32_t dst_page_id) {
     const size_t src_off_tokens = static_cast<size_t>(src_page_id) * pool->page_size;
     const size_t dst_off_tokens = static_cast<size_t>(dst_page_id) * pool->page_size;
@@ -143,7 +153,7 @@ void copy_page(LlaisysQwen2PagedPool *pool, int32_t src_page_id, int32_t dst_pag
     }
 }
 
-// Caller must NOT hold pool->mu (memset can be slow on CUDA).
+// Caller must NOT hold pool->mu. The memset can be slow on CUDA.
 void wipe_page(LlaisysQwen2PagedPool *pool, int32_t page_id) {
     const size_t offset_tokens = static_cast<size_t>(page_id) * pool->page_size;
     const size_t bytes_per_layer =
@@ -189,25 +199,23 @@ TenantState &get_or_init_tenant(LlaisysQwen2PagedPool *pool, uint64_t tenant_id)
 }
 
 // Caller holds mu.
-void chain_index_remove_page(LlaisysQwen2PagedPool *pool, uint64_t tenant_id, int32_t page_id) {
-    auto it = pool->tenants.find(tenant_id);
-    if (it == pool->tenants.end()) return;
-    auto &index = it->second.hash_to_page;
+void chain_index_remove_page(LlaisysQwen2PagedPool *pool, int32_t page_id) {
     Page &p = pool->pages[page_id];
     if (p.chain_hash != 0) {
-        auto e = index.find(p.chain_hash);
-        if (e != index.end() && e->second == page_id) {
-            index.erase(e);
+        auto e = pool->hash_to_page.find(p.chain_hash);
+        if (e != pool->hash_to_page.end() && e->second == page_id) {
+            pool->hash_to_page.erase(e);
         }
     }
     p.chain_hash = 0;
     p.sealed = false;
 }
 
-// Allocate one page for `tenant_id`. Caller holds mu. Order:
-//   (1) tenant's own LRU free, (2) global free list,
-//   (3) evict another tenant's pages above their reservation_floor.
-// need_wipe is set iff path (3) crossed a tenant boundary.
+// Allocate one page for `tenant_id`. Caller holds mu. Try in order:
+//   1. tenant's own LRU free,
+//   2. global free list,
+//   3. evict another tenant's pages above their reservation_floor.
+// need_wipe is set iff step 3 crossed a tenant boundary.
 struct AllocResult {
     int32_t page_id = -1;
     bool need_wipe = false;
@@ -221,7 +229,7 @@ AllocResult alloc_one_page(LlaisysQwen2PagedPool *pool, uint64_t tenant_id) {
         return r; // hard quota
     }
 
-    // (1) tenant's own LRU free.
+    // 1. Tenant's own LRU free.
     if (!ts.lru_free.empty()) {
         r.page_id = ts.lru_free.front();
         ts.lru_free.pop_front();
@@ -231,7 +239,7 @@ AllocResult alloc_one_page(LlaisysQwen2PagedPool *pool, uint64_t tenant_id) {
         return r;
     }
 
-    // (2) global free list.
+    // 2. Global free list.
     if (!pool->global_free_list.empty()) {
         r.page_id = pool->global_free_list.front();
         pool->global_free_list.pop_front();
@@ -242,7 +250,7 @@ AllocResult alloc_one_page(LlaisysQwen2PagedPool *pool, uint64_t tenant_id) {
         return r;
     }
 
-    // (3) evict another tenant's LRU burst page (above their floor).
+    // 3. Evict another tenant's LRU burst page above their floor.
     int32_t victim = -1;
     uint64_t victim_seq = UINT64_MAX;
     uint64_t victim_owner = 0;
@@ -265,7 +273,7 @@ AllocResult alloc_one_page(LlaisysQwen2PagedPool *pool, uint64_t tenant_id) {
         TenantState &ots = pool->tenants.at(victim_owner);
         auto it = std::find(ots.lru_free.begin(), ots.lru_free.end(), victim);
         if (it != ots.lru_free.end()) ots.lru_free.erase(it);
-        chain_index_remove_page(pool, victim_owner, victim);
+        chain_index_remove_page(pool, victim);
         ots.pages_in_use--;
     }
 
@@ -384,22 +392,32 @@ __export int32_t llaisysQwen2PagedPoolAcquire(
         rb.tenant_id = tenant_id;
         rb.in_use = true;
 
-        // Prefix lookup via chain index; matched pages are ref++ (lift back
-        // from lru_free if needed). Unmatched tail is left to Append.
+        // Prefix lookup via global chain index; ref++ (and reassign owner if
+        // needed). Unmatched tail is left to Append.
         TenantState &ts = get_or_init_tenant(pool, tenant_id);
         size_t matched_pages = 0;
         uint64_t h = 0;
         size_t off = 0;
         while (off + pool->page_size <= nprefix) {
             h = chain_hash(h, prefix_tokens + off, pool->page_size);
-            auto it = ts.hash_to_page.find(h);
-            if (it == ts.hash_to_page.end()) break;
+            auto it = pool->hash_to_page.find(h);
+            if (it == pool->hash_to_page.end()) break;
             int32_t page_id = it->second;
             Page &p = pool->pages[page_id];
-            if (p.tenant_id != tenant_id || !p.sealed) break;
+            if (!p.sealed) break;
             if (p.ref_count == 0) {
-                auto fit = std::find(ts.lru_free.begin(), ts.lru_free.end(), page_id);
-                if (fit != ts.lru_free.end()) ts.lru_free.erase(fit);
+                auto owner_it = pool->tenants.find(p.tenant_id);
+                if (owner_it != pool->tenants.end()) {
+                    auto &owner_free = owner_it->second.lru_free;
+                    auto fit = std::find(owner_free.begin(), owner_free.end(), page_id);
+                    if (fit != owner_free.end()) owner_free.erase(fit);
+                    if (p.tenant_id != tenant_id) {
+                        if (owner_it->second.pages_in_use > 0)
+                            owner_it->second.pages_in_use--;
+                        p.tenant_id = tenant_id;
+                        ts.pages_in_use++;
+                    }
+                }
             }
             p.ref_count++;
             p.last_used_seq = ++pool->lru_counter;
@@ -448,8 +466,8 @@ __export int32_t llaisysQwen2PagedPoolAppend(
     if (n_new_tokens == 0) return 0;
 
     std::vector<int32_t> wipe_pages;
-    // (src, dst) deferred to outside the mutex to keep slow D2D copies off
-    // the critical path.
+    // src,dst pairs deferred until after the mutex so slow D2D copies stay
+    // off the critical path.
     std::vector<std::pair<int32_t, int32_t>> cow_copies;
 
     {
@@ -486,7 +504,7 @@ __export int32_t llaisysQwen2PagedPoolAppend(
                 np.sealed = false;
                 np.chain_hash = 0;
 
-                // copy_page overwrites every byte → ar.need_wipe is moot.
+                // copy_page overwrites every byte, so ar.need_wipe is moot.
                 cow_copies.emplace_back(page_id, ar.page_id);
 
                 p.ref_count--;
@@ -527,9 +545,8 @@ __export void llaisysQwen2PagedPoolCommit(
         rb.prefix.assign(tokens, tokens + keep);
     }
 
-    // Seal each fully-filled, write-owned page and register its chain hash.
+    // Seal each fully-filled page; `emplace` is first-writer-wins.
     if (!rb.prefix.empty()) {
-        TenantState &ts = get_or_init_tenant(pool, rb.tenant_id);
         uint64_t h = 0;
         size_t off = 0;
         for (size_t pi = 0; pi < rb.page_table.size(); ++pi) {
@@ -543,7 +560,7 @@ __export void llaisysQwen2PagedPoolCommit(
             if (!p.sealed) {
                 p.chain_hash = h;
                 p.sealed = true;
-                ts.hash_to_page.emplace(h, page_id);  // first-writer wins
+                pool->hash_to_page.emplace(h, page_id);
             }
         }
     }
@@ -620,7 +637,7 @@ __export size_t llaisysQwen2PagedPoolGlobalPagesFree(struct LlaisysQwen2PagedPoo
 } // extern "C"
 
 // ----- Scatter K/V into pages -----
-// CUDA path lives in qwen2_paged_pool_scatter.cu (under ENABLE_NVIDIA_API).
+// CUDA path lives in qwen2_paged_pool_scatter.cu under ENABLE_NVIDIA_API.
 #ifdef ENABLE_NVIDIA_API
 namespace llaisys::paged {
 void scatter_kv_cuda(
