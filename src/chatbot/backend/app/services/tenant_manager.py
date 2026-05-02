@@ -32,6 +32,24 @@ class TenantManager:
     async def get_tenant(self, tenant_id: str) -> Optional[Tenant]:
         return await self.storage.get_tenant(tenant_id)
 
+    def get_tenant_sync(self, tenant_id: str) -> Optional[Tenant]:
+        """Sync lookup; in-memory backends only. Used by KVPoolService."""
+        getter = getattr(self.storage, "get_tenant_sync", None)
+        if getter is not None:
+            return getter(tenant_id)
+        db = getattr(self.storage, "_tenants_db", None)
+        if db is None:
+            return None
+        data = db.get(tenant_id)
+        if data is None:
+            return None
+        if isinstance(data, Tenant):
+            return data
+        try:
+            return Tenant.model_validate_json(data)
+        except Exception:
+            return None
+
     async def update_tenant(self, tenant_id: str, tenant_in: TenantUpdate) -> Optional[Tenant]:
         tenant = await self.storage.get_tenant(tenant_id)
         if not tenant:

@@ -98,3 +98,7 @@ node_modules/
 # SSL Certificates
 src/chatbot/certs/
 *.pem
+.gitnexus
+
+# Claude Code local agent state
+.claude/

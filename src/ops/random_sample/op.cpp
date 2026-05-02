@@ -103,9 +103,9 @@ void random_sample(tensor_t out_token, tensor_t logits, float temp, float top_p,
         }
     }
 
-    // Non-CPU devices
     llaisys::core::context().setDevice(logits->deviceType(), logits->deviceId());
-    
+
+
 #ifdef ENABLE_NVIDIA_API
     if (logits->deviceType() == LLAISYS_DEVICE_NVIDIA) {
         nvidia::random_sample(out_token, logits, temp, top_p, top_k);
@@ -114,6 +114,30 @@ void random_sample(tensor_t out_token, tensor_t logits, float temp, float top_p,
 #endif
 
     EXCEPTION_UNSUPPORTED_DEVICE;
+}
+
+void random_sample_batch(tensor_t out_tokens,
+                         tensor_t logits,
+                         const float *temps,
+                         const float *top_ps,
+                         const int *top_ks) {
+    ASSERT(out_tokens != nullptr && logits != nullptr,
+           "RandomSampleBatch: tensors must not be null.");
+    ASSERT(temps && top_ps && top_ks,
+           "RandomSampleBatch: per-row param arrays must not be null.");
+    ASSERT(out_tokens->ndim() == 1, "RandomSampleBatch: out_tokens must be 1D [N].");
+    ASSERT(logits->ndim() == 2, "RandomSampleBatch: logits must be 2D [N, voc].");
+    ASSERT(out_tokens->shape()[0] == logits->shape()[0],
+           "RandomSampleBatch: row count of out_tokens and logits must match.");
+    ASSERT(out_tokens->dtype() == LLAISYS_DTYPE_I64,
+           "RandomSampleBatch: out_tokens must be int64.");
+
+    const size_t n = logits->shape()[0];
+    for (size_t i = 0; i < n; ++i) {
+        tensor_t row_logits = logits->slice(0, i, i + 1);
+        tensor_t row_out = out_tokens->slice(0, i, i + 1);
+        random_sample(row_out, row_logits, temps[i], top_ps[i], top_ks[i]);
+    }
 }
 
 } // namespace llaisys::ops

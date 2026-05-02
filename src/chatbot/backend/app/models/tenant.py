@@ -6,7 +6,12 @@ import uuid
 class Quota(BaseModel):
     requests_per_minute: int = 60
     max_tokens_per_day: int = 100000
-    kv_pool_slice: int = 1024
+    kv_pool_slice: int = 1024  # legacy, kept for backward compat
+
+    # Paged-KV quotas in units of physical pages. 0 = use pool default.
+    kv_pages_reservation_floor: int = 0
+    kv_pages_max: int = 0
+    kv_pages_burst: int = 0
 
 class APIKey(BaseModel):
     key_hash: str

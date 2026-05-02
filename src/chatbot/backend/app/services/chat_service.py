@@ -74,7 +74,7 @@ class ChatService:
 
         job = RequestJob(
             request_id=req_id,
-            session_ptr=session_id,
+            tenant_id=tenant_id,
             input_ids=input_ids,
             temperature=request.temperature,
             top_p=request.top_p,

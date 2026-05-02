@@ -8,15 +8,13 @@
 namespace llaisys::ops {
 namespace {
 
-// Use shared helpers from ops/common.hpp to avoid duplication
 template<typename T>
 std::pair<int64_t, T> compute_argmax(const T* data, size_t n) {
     if (n == 0) return {0, T{0}};
-    
+
     float best_val_f = llaisys::ops::common::to_float(data[0]);
     int64_t best_idx = 0;
-    
-    // Use pointer arithmetic for potential auto-vectorization
+
     const T* current = data + 1;
     for (size_t i = 1; i < n; ++i, ++current) {
         float cur_f = llaisys::ops::common::to_float(*current);
@@ -25,24 +23,22 @@ std::pair<int64_t, T> compute_argmax(const T* data, size_t n) {
             best_idx = static_cast<int64_t>(i);
         }
     }
-    
+
     return {best_idx, llaisys::ops::common::from_float<T>(best_val_f)};
 }
 
-// CPU implementation using direct conversions
 template<typename T>
 void argmax_cpu(tensor_t max_idx, tensor_t max_val, const tensor_t& vals) {
     const T* data = reinterpret_cast<const T*>(vals->data());
     const size_t n = vals->numel();
-    
+
     auto [best_idx, best_val] = compute_argmax<T>(data, n);
-    
+
     *reinterpret_cast<int64_t*>(max_idx->data()) = best_idx;
     *reinterpret_cast<T*>(max_val->data()) = best_val;
 }
 
-// Validation function
-inline void validate_argmax_tensors(const tensor_t& max_idx, 
+inline void validate_argmax_tensors(const tensor_t& max_idx,
                                    const tensor_t& max_val, 
                                    const tensor_t& vals) {
     CHECK_SAME_DEVICE(max_idx, max_val, vals);
@@ -65,8 +61,7 @@ inline void validate_argmax_tensors(const tensor_t& max_idx,
 
 void argmax(tensor_t max_idx, tensor_t max_val, tensor_t vals) {
     validate_argmax_tensors(max_idx, max_val, vals);
-    
-    // CPU path optimized with direct conversions
+
     if (vals->deviceType() == LLAISYS_DEVICE_CPU) {
         switch (vals->dtype()) {
             case LLAISYS_DTYPE_F32:
@@ -82,8 +77,7 @@ void argmax(tensor_t max_idx, tensor_t max_val, tensor_t vals) {
                 EXCEPTION_UNSUPPORTED_DATATYPE(vals->dtype());
         }
     }
-    
-    // Non-CPU devices
+
     llaisys::core::context().setDevice(vals->deviceType(), vals->deviceId());
     
 #ifdef ENABLE_NVIDIA_API
@@ -94,5 +88,35 @@ void argmax(tensor_t max_idx, tensor_t max_val, tensor_t vals) {
 #endif
 
     EXCEPTION_UNSUPPORTED_DEVICE;
+}
+
+void argmax_batch(tensor_t out_indices, tensor_t logits) {
+    ASSERT(out_indices && logits, "ArgmaxBatch: tensors must not be null.");
+    ASSERT(out_indices->ndim() == 1, "ArgmaxBatch: out_indices must be 1D [N].");
+    ASSERT(logits->ndim() == 2, "ArgmaxBatch: logits must be 2D [N, voc].");
+    ASSERT(out_indices->shape()[0] == logits->shape()[0],
+           "ArgmaxBatch: row count of out_indices and logits must match.");
+    ASSERT(out_indices->dtype() == LLAISYS_DTYPE_I64,
+           "ArgmaxBatch: out_indices must be int64.");
+    // Contiguity required by the slice→view→argmax dispatch below.
+    ASSERT(logits->isContiguous(),
+           "ArgmaxBatch: logits must be contiguous.");
+    ASSERT(out_indices->isContiguous(),
+           "ArgmaxBatch: out_indices must be contiguous.");
+
+    const size_t n = logits->shape()[0];
+    const size_t voc = logits->shape()[1];
+
+    // single argmax wants a max_val output; reuse one scratch across rows.
+    tensor_t max_val_scratch = Tensor::create(
+        std::vector<size_t>{1}, logits->dtype(),
+        logits->deviceType(), logits->deviceId());
+
+    for (size_t i = 0; i < n; ++i) {
+        tensor_t row_2d = logits->slice(0, i, i + 1);
+        tensor_t row_1d = row_2d->view(std::vector<size_t>{voc});
+        tensor_t idx_slice = out_indices->slice(0, i, i + 1);
+        argmax(idx_slice, max_val_scratch, row_1d);
+    }
 }
 } // namespace llaisys::ops

@@ -157,7 +157,9 @@ target("llaisys")
     add_files("src/llaisys/*.cc")
 
     if has_config("nv-gpu") then
-        add_files("src/llaisys/cuda_dummy.cu")
+        -- Glob picks up cuda_dummy.cu plus the paged-KV CUDA kernels
+        -- (scatter, paged attention helpers).
+        add_files("src/llaisys/*.cu")
     end
 
     set_installdir(".")

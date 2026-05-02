@@ -2,11 +2,14 @@
 #include "llaisys/ops.h"
 #include "llaisys/tensor.h"
 #include "llaisys/runtime.h"
+#include "../utils/check.hpp"
 #include <vector>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
 #include <cstdio>
+#include <iostream>
+#include <stdexcept>
 #include <algorithm>
 #include <random>
 #include <numeric>
@@ -455,6 +458,267 @@ __export int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model * model, int64_
     int64_t res = llaisysQwen2ModelForward(session, token_ids, ntoken, temp, top_p, top_k);
     llaisysQwen2ModelDestroySession(session);
     return res;
+}
+
+} // extern "C"
+
+static int32_t forward_batch_paged_inner(
+    LlaisysQwen2Model *model,
+    LlaisysQwen2PagedPool *pool,
+    const int64_t *packed_tokens,
+    const int32_t *cu_seqlens_q,
+    const int32_t *block_ids,
+    const int32_t *slot_mapping,
+    const float *temps,
+    const float *top_ps,
+    const int *top_ks,
+    int32_t batch,
+    int64_t *out_next_tokens) {
+    const size_t hs = model->meta.hs;
+    const size_t nh = model->meta.nh;
+    const size_t nkvh = model->meta.nkvh;
+    const size_t dh = model->meta.dh;
+    const size_t di = model->meta.di;
+    const size_t voc = model->meta.voc;
+    const size_t nlayer = model->meta.nlayer;
+    const size_t page_size = llaisysQwen2PagedPoolPageSize(pool);
+
+    size_t elem_size = (model->meta.dtype == LLAISYS_DTYPE_F32) ? 4 : 2;
+    if (model->meta.dtype == LLAISYS_DTYPE_BF16) elem_size = 2;
+    const auto runtime = llaisysGetRuntimeAPI(model->device_type);
+
+    const size_t total_q = static_cast<size_t>(cu_seqlens_q[batch]);
+    if (total_q == 0) return 0;
+
+    // pool.pos already includes the new tokens (Append ran before this call),
+    // so BlockPos is the kv_len for attention.
+    std::vector<int32_t> kv_lens(batch);
+    std::vector<int32_t> q_lens(batch);
+    std::vector<int32_t> block_table_lens(batch);
+    std::vector<std::vector<int32_t>> per_req_block_tables(batch);
+    std::vector<int64_t> pos_ids_host(total_q);
+
+    int32_t total_pages_in_batch = 0;
+    for (int32_t r = 0; r < batch; ++r) {
+        kv_lens[r] = static_cast<int32_t>(llaisysQwen2PagedPoolBlockPos(pool, block_ids[r]));
+        q_lens[r] = cu_seqlens_q[r + 1] - cu_seqlens_q[r];
+        // Page table size = ceil(kv_len / page_size).
+        const size_t npages = (static_cast<size_t>(kv_lens[r]) + page_size - 1) / page_size;
+        block_table_lens[r] = static_cast<int32_t>(npages);
+        per_req_block_tables[r].resize(npages);
+        if (npages > 0) {
+            llaisysQwen2PagedPoolPageTable(pool, block_ids[r], per_req_block_tables[r].data());
+        }
+        total_pages_in_batch += static_cast<int32_t>(npages);
+
+        // Pos ids: contiguous from (kv_lens[r] - q_lens[r]) for q_lens[r] tokens.
+        const int32_t past = kv_lens[r] - q_lens[r];
+        for (int32_t i = 0; i < q_lens[r]; ++i) {
+            pos_ids_host[cu_seqlens_q[r] + i] = static_cast<int64_t>(past + i);
+        }
+    }
+    std::vector<int32_t> block_tables_flat;
+    block_tables_flat.reserve(total_pages_in_batch);
+    for (int32_t r = 0; r < batch; ++r) {
+        block_tables_flat.insert(block_tables_flat.end(),
+                                  per_req_block_tables[r].begin(),
+                                  per_req_block_tables[r].end());
+    }
+
+    // Tokens [total_q].
+    size_t shape_tok[1] = {total_q};
+    llaisysTensor_t tokens =
+        tensorCreate(shape_tok, 1, LLAISYS_DTYPE_I64, model->device_type, model->device_id);
+    tensorLoad(tokens, const_cast<int64_t *>(packed_tokens));
+
+    size_t shape_x[2] = {total_q, hs};
+    llaisysTensor_t x =
+        tensorCreate(shape_x, 2, model->meta.dtype, model->device_type, model->device_id);
+    llaisysEmbedding(x, tokens, model->weights.in_embed);
+    tensorDestroy(tokens);
+
+    size_t shape_pos[1] = {total_q};
+    llaisysTensor_t pos_ids =
+        tensorCreate(shape_pos, 1, LLAISYS_DTYPE_I64, model->device_type, model->device_id);
+    tensorLoad(pos_ids, pos_ids_host.data());
+
+    for (size_t layer = 0; layer < nlayer; ++layer) {
+        llaisysTensor_t x_norm = tensorCreate(shape_x, 2, model->meta.dtype,
+                                              model->device_type, model->device_id);
+        llaisysRmsNorm(x_norm, x, model->weights.attn_norm_w[layer], model->meta.epsilon);
+
+        size_t shape_q_flat[2] = {total_q, nh * dh};
+        size_t shape_kv_flat[2] = {total_q, nkvh * dh};
+        llaisysTensor_t q = tensorCreate(shape_q_flat, 2, model->meta.dtype,
+                                         model->device_type, model->device_id);
+        llaisysTensor_t k_new = tensorCreate(shape_kv_flat, 2, model->meta.dtype,
+                                             model->device_type, model->device_id);
+        llaisysTensor_t v_new = tensorCreate(shape_kv_flat, 2, model->meta.dtype,
+                                             model->device_type, model->device_id);
+
+        llaisysLinear(q, x_norm, model->weights.attn_q_w[layer], model->weights.attn_q_b[layer]);
+        llaisysLinear(k_new, x_norm, model->weights.attn_k_w[layer], model->weights.attn_k_b[layer]);
+        llaisysLinear(v_new, x_norm, model->weights.attn_v_w[layer], model->weights.attn_v_b[layer]);
+        tensorDestroy(x_norm);
+
+        size_t shape_q3[3] = {total_q, nh, dh};
+        size_t shape_kv3[3] = {total_q, nkvh, dh};
+        llaisysTensor_t q_view = tensorView(q, shape_q3, 3);
+        llaisysTensor_t k_new_view = tensorView(k_new, shape_kv3, 3);
+        llaisysTensor_t v_new_view = tensorView(v_new, shape_kv3, 3);
+
+        llaisysROPE(q_view, q_view, pos_ids, model->meta.theta);
+        llaisysROPE(k_new_view, k_new_view, pos_ids, model->meta.theta);
+
+        // Scatter rotated K/V into pool pages at slot_mapping positions.
+        if (llaisysQwen2PagedPoolScatterKV(
+                pool, layer, k_new_view, v_new_view, slot_mapping, total_q) != 0) {
+            tensorDestroy(q_view); tensorDestroy(k_new_view); tensorDestroy(v_new_view);
+            tensorDestroy(q); tensorDestroy(k_new); tensorDestroy(v_new);
+            tensorDestroy(x); tensorDestroy(pos_ids);
+            return -4;
+        }
+
+        // Run paged attention against pool's big K/V buffers.
+        llaisysTensor_t big_k = llaisysQwen2PagedPoolBigK(pool, layer);
+        llaisysTensor_t big_v = llaisysQwen2PagedPoolBigV(pool, layer);
+        llaisysTensor_t attn_out = tensorCreate(shape_q3, 3, model->meta.dtype,
+                                                model->device_type, model->device_id);
+        const float scale = 1.0f / sqrtf(static_cast<float>(dh));
+        llaisysSelfAttentionPaged(
+            attn_out, q_view, big_k, big_v,
+            block_tables_flat.data(), block_table_lens.data(),
+            cu_seqlens_q, kv_lens.data(),
+            batch, static_cast<int32_t>(page_size), scale);
+
+        llaisysTensor_t attn_out_flat = tensorView(attn_out, shape_q_flat, 2);
+        llaisysTensor_t h = tensorCreate(shape_x, 2, model->meta.dtype,
+                                         model->device_type, model->device_id);
+        llaisysLinear(h, attn_out_flat, model->weights.attn_o_w[layer], model->zero_bias_hs);
+
+        tensorDestroy(attn_out);
+        tensorDestroy(attn_out_flat);
+        tensorDestroy(q_view);
+        tensorDestroy(k_new_view);
+        tensorDestroy(v_new_view);
+        tensorDestroy(q);
+        tensorDestroy(k_new);
+        tensorDestroy(v_new);
+
+        llaisysAdd(x, x, h);
+        tensorDestroy(h);
+
+        llaisysTensor_t mlp_norm = tensorCreate(shape_x, 2, model->meta.dtype,
+                                                model->device_type, model->device_id);
+        llaisysRmsNorm(mlp_norm, x, model->weights.mlp_norm_w[layer], model->meta.epsilon);
+
+        size_t shape_inter[2] = {total_q, di};
+        llaisysTensor_t gate = tensorCreate(shape_inter, 2, model->meta.dtype,
+                                            model->device_type, model->device_id);
+        llaisysTensor_t up = tensorCreate(shape_inter, 2, model->meta.dtype,
+                                          model->device_type, model->device_id);
+        llaisysLinear(gate, mlp_norm, model->weights.mlp_gate_w[layer], model->zero_bias_di);
+        llaisysLinear(up, mlp_norm, model->weights.mlp_up_w[layer], model->zero_bias_di);
+
+        llaisysTensor_t mlp_act = tensorCreate(shape_inter, 2, model->meta.dtype,
+                                               model->device_type, model->device_id);
+        llaisysSwiGLU(mlp_act, gate, up);
+        tensorDestroy(gate);
+        tensorDestroy(up);
+
+        llaisysTensor_t mlp_out = tensorCreate(shape_x, 2, model->meta.dtype,
+                                               model->device_type, model->device_id);
+        llaisysLinear(mlp_out, mlp_act, model->weights.mlp_down_w[layer], model->zero_bias_hs);
+        tensorDestroy(mlp_act);
+        tensorDestroy(mlp_norm);
+
+        llaisysAdd(x, x, mlp_out);
+        tensorDestroy(mlp_out);
+    }
+    tensorDestroy(pos_ids);
+
+    llaisysTensor_t x_final = tensorCreate(shape_x, 2, model->meta.dtype,
+                                           model->device_type, model->device_id);
+    llaisysRmsNorm(x_final, x, model->weights.out_norm_w, model->meta.epsilon);
+    tensorDestroy(x);
+
+    size_t shape_logits_b[2] = {static_cast<size_t>(batch), voc};
+    llaisysTensor_t host_logits =
+        tensorCreate(shape_logits_b, 2, model->meta.dtype, LLAISYS_DEVICE_CPU, 0);
+    char *host_logits_ptr = static_cast<char *>(tensorGetData(host_logits));
+
+    for (int32_t r = 0; r < batch; ++r) {
+        const size_t last_idx = static_cast<size_t>(cu_seqlens_q[r + 1]) - 1;
+        llaisysTensor_t last_state = tensorSlice(x_final, 0, last_idx, last_idx + 1);
+        size_t shape_logits_row[2] = {1, voc};
+        llaisysTensor_t row_logits =
+            tensorCreate(shape_logits_row, 2, model->meta.dtype,
+                         model->device_type, model->device_id);
+        llaisysLinear(row_logits, last_state, model->weights.out_embed, model->zero_bias_voc);
+
+        runtime->memcpy_sync(host_logits_ptr + r * voc * elem_size,
+                             tensorGetData(row_logits),
+                             voc * elem_size, LLAISYS_MEMCPY_D2H);
+
+        tensorDestroy(row_logits);
+        tensorDestroy(last_state);
+    }
+    tensorDestroy(x_final);
+
+    size_t shape_out[1] = {static_cast<size_t>(batch)};
+    llaisysTensor_t out_token = tensorCreate(shape_out, 1, LLAISYS_DTYPE_I64,
+                                             LLAISYS_DEVICE_CPU, 0);
+    llaisysRandomSampleBatch(out_token, host_logits, temps, top_ps, top_ks);
+    std::memcpy(out_next_tokens, tensorGetData(out_token),
+                static_cast<size_t>(batch) * sizeof(int64_t));
+    tensorDestroy(out_token);
+    tensorDestroy(host_logits);
+
+    return 0;
+}
+
+extern "C" {
+
+__export int32_t llaisysQwen2ModelForwardBatchPaged(
+    struct LlaisysQwen2Model *model,
+    struct LlaisysQwen2PagedPool *pool,
+    const int64_t *packed_tokens,
+    const int32_t *cu_seqlens_q,
+    const int32_t *block_ids,
+    const int32_t *slot_mapping,
+    const float *temps,
+    const float *top_ps,
+    const int *top_ks,
+    int32_t batch,
+    int64_t *out_next_tokens) {
+    if (out_next_tokens && batch > 0) {
+        std::memset(out_next_tokens, 0,
+                    static_cast<size_t>(batch) * sizeof(int64_t));
+    }
+    if (!model || !pool || batch <= 0) return -1;
+
+    try {
+        return forward_batch_paged_inner(model, pool, packed_tokens,
+                                         cu_seqlens_q, block_ids, slot_mapping,
+                                         temps, top_ps, top_ks, batch,
+                                         out_next_tokens);
+    } catch (const std::exception &e) {
+        std::cerr << "[ERROR] ForwardBatchPaged: " << e.what()
+                  << EXCEPTION_LOCATION_MSG << std::endl;
+        if (out_next_tokens && batch > 0) {
+            std::memset(out_next_tokens, 0,
+                        static_cast<size_t>(batch) * sizeof(int64_t));
+        }
+        return -3;
+    } catch (...) {
+        std::cerr << "[ERROR] ForwardBatchPaged: unknown exception"
+                  << EXCEPTION_LOCATION_MSG << std::endl;
+        if (out_next_tokens && batch > 0) {
+            std::memset(out_next_tokens, 0,
+                        static_cast<size_t>(batch) * sizeof(int64_t));
+        }
+        return -3;
+    }
 }
 
 } // extern "C"

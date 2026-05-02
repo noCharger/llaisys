@@ -1,9 +1,13 @@
+import os
+
 from fastapi import Request
 from .services.tenant_manager import TenantManager
 from .services.model_service import ModelService
 from .services.scheduler import ClipperScheduler
 from .services.queue_service import MemoryQueueService
 from .services.chat_service import ChatService
+from .services.kv_pool_service import KVPoolService
+from .services.tokenizer import build_tokenizer
 from .dao.session_dao import SessionDAO
 from .services.rate_limiter import RateLimiter
 from .services.context_manager import ContextManager
@@ -12,10 +16,22 @@ tenant_manager = TenantManager()
 rate_limiter = RateLimiter(tenant_manager)
 model_service = ModelService()
 queue_service = MemoryQueueService()
-scheduler = ClipperScheduler(model_service, queue_service)
+
+# Stub default; main.py swaps in a real PagedKVCache at startup.
+_kv_backend = os.environ.get("LLAISYS_KV_BACKEND", "stub").lower()
+kv_pool_service = KVPoolService(
+    pool=None, n_blocks=32, max_len_per_block=8192,
+    tenant_manager=tenant_manager,
+)
+
+scheduler = ClipperScheduler(model_service, queue_service, kv_pool_service)
 session_dao = SessionDAO()
 context_manager = ContextManager()
 chat_service = ChatService(scheduler, session_dao, context_manager)
+
+tokenizer = build_tokenizer(os.environ.get("LLAISYS_TOKENIZER_PATH"))
+if tokenizer.eos_token_id is not None:
+    scheduler.set_eos_token(tokenizer.eos_token_id)
 
 def get_tenant_manager(request: Request) -> TenantManager:
     return request.app.state.tenant_manager
@@ -31,3 +47,11 @@ def get_scheduler() -> ClipperScheduler:
 
 def get_context_manager() -> ContextManager:
     return context_manager
+
+
+def get_kv_pool_service() -> KVPoolService:
+    return kv_pool_service
+
+
+def get_tokenizer():
+    return tokenizer

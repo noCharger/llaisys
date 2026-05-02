@@ -36,10 +36,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 return JSONResponse(status_code=403, content={"detail": "Invalid API Key"})
             tenant_id = tenant.id
             logger.debug(f"AuthMiddleware: Validation successful. Tenant ID: {tenant_id}")
-        elif request.headers.get("x-tenant-id"):
-
-            tenant_id = request.headers.get("x-tenant-id")
         else:
+            # SECURITY: must not trust an unauthenticated x-tenant-id header.
             return JSONResponse(status_code=401, content={"detail": "Missing or invalid Authorization header"})
 
         if not tenant_id:

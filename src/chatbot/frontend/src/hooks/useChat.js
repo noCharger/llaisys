@@ -49,9 +49,8 @@ const useChat = (apiKey) => {
       const headers = { 'Content-Type': 'application/json' };
       if (apiKey) {
         headers['Authorization'] = `Bearer ${apiKey}`;
-      } else {
-        headers['x-tenant-id'] = 'dev-tenant';
       }
+      // No fallback header: backend rejects unauthenticated requests with 401.
 
       const response = await fetch(endpoint, {
         method: 'POST',

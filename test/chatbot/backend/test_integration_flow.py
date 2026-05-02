@@ -26,6 +26,7 @@ async def test_e2e_chat_completion():
 
     tenant = await tenant_manager.create_tenant(TenantCreate(name="Integration Test Tenant", quotas=Quota(requests_per_minute=100)))
     tenant_id = tenant.id
+    api_key = await tenant_manager.create_api_key(tenant_id)
 
     qs = MemoryQueueService()
     ms = ModelService()
@@ -45,7 +46,7 @@ async def test_e2e_chat_completion():
                     "messages": [{"role": "user", "content": "Hello"}],
                     "model": "gpt-3.5-turbo"
                 },
-                headers={"x-tenant-id": tenant_id}
+                headers={"Authorization": f"Bearer {api_key}"}
             )
 
             assert response.status_code == 200

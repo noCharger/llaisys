@@ -11,7 +11,8 @@ class TestQueueSchedulerIntegration:
         queue_service = MemoryQueueService(visibility_timeout=5.0)
 
         mock_model_service = MagicMock()
-        mock_model_service.forward_batch = AsyncMock(return_value=[1])
+        # Strings -> legacy stub mode -> jobs finish in one execute step.
+        mock_model_service.forward_batch = AsyncMock(return_value=["A"])
         mock_model_service.forward = MagicMock(return_value=1)
 
         scheduler = ClipperScheduler(mock_model_service, queue_service=queue_service)
@@ -23,7 +24,7 @@ class TestQueueSchedulerIntegration:
             "top_p": 0.9,
             "top_k": 50,
             "request_id": "req-1",
-            "session_ptr": "ptr"
+            "tenant_id": "tenant-test"
         })
         await queue_service.enqueue(topic, msg)
 
@@ -48,7 +49,7 @@ class TestQueueSchedulerIntegration:
 
         topic = "model-inference"
         msg = QueueMessage(id="req-fail", payload={
-            "input_ids": [1], "request_id": "req-fail", "session_ptr": "ptr"
+            "input_ids": [1], "request_id": "req-fail", "tenant_id": "tenant-test"
         })
         await queue_service.enqueue(topic, msg)
 
