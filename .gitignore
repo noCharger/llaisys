@@ -19,9 +19,6 @@ lib/
 # Python
 __pycache__/
 
-# Documentation
-docs/
-
 # Log
 *.log
 
