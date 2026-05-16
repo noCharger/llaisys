@@ -39,7 +39,7 @@ target("llaisys-ops-nvidia")
     set_policy("build.cuda.devlink", true)
 
     -- Link CUDA runtime and driver (replacing the standalone "cublas" link)
-    add_links("cudart", "cublas", "cuda")
+    add_links("cudart", "cublas", "cuda", "curand")
 
     if is_plat("linux") then
         add_cugencodes("native")
