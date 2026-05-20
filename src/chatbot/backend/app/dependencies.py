@@ -4,6 +4,8 @@ from fastapi import Request
 from .services.tenant_manager import TenantManager
 from .services.model_service import ModelService
 from .services.scheduler import ClipperScheduler
+from .services.pd_scheduler import PDScheduler
+from .services.kv_store_service import KVStoreService
 from .services.queue_service import MemoryQueueService
 from .services.chat_service import ChatService
 from .services.kv_pool_service import KVPoolService
@@ -24,7 +26,18 @@ kv_pool_service = KVPoolService(
     tenant_manager=tenant_manager,
 )
 
-scheduler = ClipperScheduler(model_service, queue_service, kv_pool_service)
+# LLAISYS_SCHEDULER selects the serving topology:
+#   combined  ClipperScheduler, prefill chunks and decode pack into one
+#             varlen forward, Sarathi-Serve style.
+#   pd        PDScheduler, Mooncake-style PD disaggregation with a shared
+#             KV store. Prefill and decode run on separate workers.
+_sched_mode = os.environ.get("LLAISYS_SCHEDULER", "combined").lower()
+if _sched_mode == "pd":
+    kv_store_service = KVStoreService(kv_pool_service)
+    scheduler = PDScheduler(model_service, kv_store_service)
+else:
+    kv_store_service = None
+    scheduler = ClipperScheduler(model_service, queue_service, kv_pool_service)
 session_dao = SessionDAO()
 context_manager = ContextManager()
 chat_service = ChatService(scheduler, session_dao, context_manager)

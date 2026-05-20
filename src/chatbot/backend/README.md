@@ -96,6 +96,45 @@ Quota(
 `KVPoolService` pushes these into the C pool on first acquire for each
 tenant. A value of 0 means use pool defaults.
 
+### Two serving topologies
+
+The backend ships with two interchangeable schedulers, selected by the
+`LLAISYS_SCHEDULER` env var:
+
+| Mode | Class | Strategy |
+|---|---|---|
+| `combined` (default) | `ClipperScheduler` | Sarathi-Serve, prefill chunks and decode pack into one varlen forward |
+| `pd` | `PDScheduler` | Mooncake-style PD disaggregation with a shared KV store |
+
+Both write to the same paged pool. Because the prefix index is global and
+content-addressed, a prefill commit done by one scheduler is immediately
+visible to the other on resubmit.
+
+### Mooncake-style PD disaggregation
+
+`pd_scheduler.py` runs two cooperating workers that share a
+`KVStoreService` over the paged pool:
+
+```
+submit ──► PrefillWorker ─── commit + publish handoff ───► DecodeWorker ─── stream tokens
+                │                       ▲
+                └── shared paged pool ──┘    block_id transfer only,
+                  global prefix index        zero KV copy
+```
+
+The Prefill worker packs jobs whose prefill is incomplete into one
+forward bounded by `token_budget`. When a prompt is fully prefilled it
+commits the prompt so its pages enter the global prefix index, then
+publishes a `PrefillHandoff` carrying the `block_id` and the first
+sampled token. The Decode worker pulls handed-off jobs, batches them up
+to `decode_batch_size`, runs single-token decode forwards, and streams
+tokens until EOS or `max_tokens`.
+
+The hand-off is zero copy. Because both workers share the same paged
+pool, the Decode worker reads the exact physical pages the Prefill
+worker wrote. This is the Mooncake advantage over DistServe-style PD
+disaggregation that copies KV across nodes through RDMA.
+
 ### Continuous batching: 3-phase loop
 
 `services/scheduler.py` runs:
@@ -195,6 +234,8 @@ scheduler.set_eos_token(tokenizer.eos_token_id)
 | `app/routers/chat.py` | `/v1/chat/completions` plus SSE streaming |
 | `app/routers/admin.py` | Tenant CRUD, API key generation |
 | `app/services/scheduler.py` | 3-phase continuous-batching scheduler |
+| `app/services/pd_scheduler.py` | Mooncake-style PD-disaggregated scheduler |
+| `app/services/kv_store_service.py` | Shared KV store facade for PD mode |
 | `app/services/kv_pool_service.py` | Tenant-scoped wrapper around KV pool |
 | `app/services/model_service.py` | Stub plus `BatchedQwen2Service` |
 | `app/services/tokenizer.py` | HF and placeholder tokenizer abstraction |
@@ -218,6 +259,8 @@ Key coverage:
 * `test_chunked_prefill_preempt.py` chunked prefill under token_budget,
   hash-chain prefix match, cross-tenant prefix sharing, preemption with
   prefix recovery, preempt cap.
+* `test_pd_separation.py` PD-disaggregated scheduler, prefill-decode
+  hand-off, zero-copy KV sharing, long prompt chunking before hand-off.
 * `test_paged_quota.py` per-tenant quota propagation from TenantManager
   into the C pool.
 * `test_scheduler.py` AIMD logic, delayed batching.
