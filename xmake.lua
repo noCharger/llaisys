@@ -95,6 +95,9 @@ target("llaisys-ops")
     set_warnings("all", "error")
     if not is_plat("windows") then
         add_cxflags("-fPIC", "-Wno-unknown-pragmas")
+        if is_arch("x86_64") then
+            add_cxflags("-mavx2", "-mfma")
+        end
     end
     
     add_files("src/ops/*/*.cpp")
