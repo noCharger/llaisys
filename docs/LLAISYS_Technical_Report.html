@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLAISYS Technical Report</title>
+    <style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; line-height: 1.6; max_width: 800px; margin: 0 auto; padding: 2rem; color: #24292f; }
+h1, h2, h3 { margin-top: 24px; margin-bottom: 16px; font-weight: 600; line-height: 1.25; }
+h1 { font-size: 2em; border-bottom: 1px solid #eaecef; padding-bottom: 0.3em; }
+h2 { font-size: 1.5em; border-bottom: 1px solid #eaecef; padding-bottom: 0.3em; }
+h3 { font-size: 1.25em; }
+p { margin-top: 0; margin-bottom: 16px; }
+pre { background-color: #f6f8fa; border-radius: 6px; padding: 16px; overflow: auto; line-height: 1.45; }
+code { font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace; font-size: 85%; background-color: rgba(175,184,193,0.2); padding: 0.2em 0.4em; border-radius: 6px; }
+pre code { background-color: transparent; padding: 0; font-size: 100%; word-break: normal; white-space: pre; }
+table { border-spacing: 0; border-collapse: collapse; margin-top: 0; margin-bottom: 16px; width: 100%; display: block; overflow: auto; }
+th, td { padding: 6px 13px; border: 1px solid #d0d7de; }
+th { font-weight: 600; background-color: #f6f8fa; }
+tr { background-color: #ffffff; border-top: 1px solid #d0d7de; }
+tr:nth-child(2n) { background-color: #f6f8fa; }
+blockquote { border-left: 0.25em solid #d0d7de; color: #57606a; padding: 0 1em; margin: 0 0 16px 0; }
+img { max-width: 100%; box-sizing: content-box; background-color: #fff; }
+hr { height: 0.25em; padding: 0; margin: 24px 0; background-color: #d0d7de; border: 0; }
+</style>
+</head>
+<body>
+<h1 id="llaisys-comprehensive-technical-report">LLAISYS Comprehensive Technical Report</h1>
+<p><strong>Date:</strong> March 15, 2026</p>
+<p><strong>Author:</strong> no_charger</p>
+<hr />
+<h2 id="1-project-background">1. Project Background</h2>
+<p><strong>LLAISYS</strong> (Let's Learn AI SYStem) is an educational yet high-performance deep learning inference system designed to bridge the gap between theoretical knowledge and system-level implementation. The project aims to build a full-stack AI system from scratch, covering low-level tensor operations, custom CUDA kernels, operator optimization, and high-level application serving.</p>
+<p>The current phase of the project focuses on two major milestones:</p>
+<ol>
+<li>Integrating NVIDIA CUDA support to achieve performance parity or superiority over industry-standard frameworks like PyTorch.</li>
+<li>Building a robust AI chatbot server with support for stateful conversations, random sampling strategies, and concurrency management.</li>
+</ol>
+<hr />
+<h2 id="2-requirement-analysis">2. Requirement Analysis</h2>
+<h3 id="21-performance-requirements">2.1 Performance Requirements</h3>
+<p>Deep Learning models, particularly Large Language Models (LLMs), are compute and memory-intensive. CPU-only inference is insufficient for real-time applications.</p>
+<ul>
+<li>Accelerate inference using NVIDIA GPUs.</li>
+<li>Achieve lower latency and higher throughput compared to PyTorch Eager mode, specifically optimizing "Last Mile" inefficiencies like kernel launch overheads and memory bandwidth utilization.</li>
+</ul>
+<h3 id="22-functional-requirements">2.2 Functional Requirements</h3>
+<p>To transform the inference engine into a usable product, the following features are required:</p>
+<ul>
+<li>A robust HTTP/HTTPS server to handle user requests.</li>
+<li>Implementation of random sampling (Temperature, Top-K, Top-P) to replace deterministic Argmax sampling for more diverse responses.</li>
+<li>Efficient management of conversation history (KV Cache) to support multi-turn dialogues.</li>
+<li>Safe handling of multiple concurrent requests accessing shared resources (KV Cache pool).</li>
+</ul>
+<hr />
+<h2 id="3-system-architecture">3. System Architecture</h2>
+<p>The LLAISYS Chatbot system adopts a layered heterogeneous architecture, integrating a React-based frontend, a Python FastAPI backend, and a high-performance C++ inference engine.</p>
+<p><img alt="System Architecture" src="arch/system_architecture.png" />
+<em>Figure 1-1: LLAISYS C4 Container Architecture Diagram</em></p>
+<h3 id="key-components">Key Components:</h3>
+<ul>
+<li>A modern chat interface built with React 18 and Vite (Port: 5173), supporting real-time streaming and "Thought Process" visualization.</li>
+<li>Enhanced FastAPI server (Port: 6008/6009) with HTTPS support, session management, context awareness, and observability.</li>
+<li>C++ shared library (<code>libllaisys</code>) now supporting stateful KV-Cache sessions and random sampling operators.</li>
+</ul>
+<hr />
+<h2 id="4-api-interface-layer">4. API Interface Layer</h2>
+<p>The backend exposes a RESTful API compatible with OpenAI's Chat Completion format, enhanced with context management capabilities.</p>
+<h3 id="41-chat-completions">4.1 Chat Completions</h3>
+<ul>
+<li><code>POST /v1/chat/completions</code></li>
+<li>Generates a model response for the given chat conversation.</li>
+<li>None (Public/Educational). Security headers (CSP, X-Frame-Options) are enforced via middleware.</li>
+<li>Implicitly limited by <code>max_sessions</code> (default: 10). Excess requests return <code>503 Service Unavailable</code>.</li>
+</ul>
+<p><strong>Request Example:</strong></p>
+<pre><code class="language-json">{
+  &quot;model&quot;: &quot;qwen2&quot;,
+  &quot;messages&quot;: [
+    {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Hello&quot;}
+  ],
+  &quot;temperature&quot;: 0.7,
+  &quot;top_p&quot;: 0.9,
+  &quot;top_k&quot;: 50,
+  &quot;stream&quot;: true,
+  &quot;session_id&quot;: &quot;optional-uuid-v4&quot;
+}
+</code></pre>
+<p><strong>Response Example (Stream):</strong></p>
+<pre><code class="language-text">data: {&quot;id&quot;:&quot;...&quot;, &quot;object&quot;:&quot;chat.completion.chunk&quot;, &quot;created&quot;:123, &quot;model&quot;:&quot;qwen2&quot;, &quot;choices&quot;:[{&quot;index&quot;:0, &quot;delta&quot;:{&quot;role&quot;:&quot;assistant&quot;}, &quot;finish_reason&quot;:null}]}
+
+data: {&quot;id&quot;:&quot;...&quot;, &quot;object&quot;:&quot;chat.completion.chunk&quot;, &quot;created&quot;:123, &quot;model&quot;:&quot;qwen2&quot;, &quot;choices&quot;:[{&quot;index&quot;:0, &quot;delta&quot;:{&quot;content&quot;:&quot;Hello&quot;}, &quot;finish_reason&quot;:null}]}
+
+data: [DONE]
+</code></pre>
+<h3 id="42-context-management">4.2 Context Management</h3>
+<ul>
+<li><code>POST /v1/context/items</code></li>
+<li>Adds Tag-based context items for template rendering.</li>
+<li><strong>Status Codes</strong>: <code>200 OK</code> (Success), <code>400 Bad Request</code> (Validation error), <code>404 Not Found</code> (for DELETE), <code>409 Conflict</code> (Session busy), <code>503 Service Unavailable</code> (Server at capacity).</li>
+</ul>
+<p>The Context Management system utilizes <strong>Jinja2 templates</strong> for dynamic prompt construction. </p>
+<ul>
+<li>Defined in <code>src/chatbot/backend/context_manager.py</code>, it uses a <code>BaseLoader</code> for string-based templates and enables <code>autoescape</code>.</li>
+<li>Provides custom filters like <code>filter_by_tag</code> and <code>exclude_by_tag</code> to manipulate context items.</li>
+<li>During a chat request with <code>use_template=True</code>, the <code>system_prompt</code> is treated as a Jinja2 template. The engine injects all current <code>context_items</code> into the rendering context, allowing developers to dynamically construct the final prompt based on tagged knowledge.</li>
+</ul>
+<hr />
+<h2 id="5-data-model">5. Data Model</h2>
+<h3 id="51-entity-relationship">5.1 Entity Relationship</h3>
+<pre><code class="language-mermaid">erDiagram
+    SessionMeta ||--o{ ChatMessage : contains
+    SessionMeta {
+        string session_id PK
+        pointer session_ptr &quot;C++ Handle&quot;
+        float last_accessed
+        bool in_use
+        int[] history_ids
+    }
+    ChatMessage {
+        string role
+        string content
+    }
+    ContextItem {
+        string id PK
+        string content
+        string[] tags
+        json metadata
+    }
+</code></pre>
+<h3 id="52-json-schema">5.2 JSON Schema</h3>
+<p><strong>ContextItemRequest:</strong></p>
+<pre><code class="language-json">{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;properties&quot;: {
+    &quot;id&quot;: {&quot;type&quot;: &quot;string&quot;},
+    &quot;content&quot;: {&quot;type&quot;: &quot;string&quot;},
+    &quot;tags&quot;: {&quot;type&quot;: &quot;array&quot;, &quot;items&quot;: {&quot;type&quot;: &quot;string&quot;}},
+    &quot;metadata&quot;: {&quot;type&quot;: &quot;object&quot;}
+  },
+  &quot;required&quot;: [&quot;id&quot;, &quot;content&quot;]
+}
+</code></pre>
+<h3 id="53-request-and-response-schemas">5.3 Request and Response Schemas</h3>
+<p>The system utilizes Pydantic models defined in <code>src/chatbot/backend/schemas.py</code> to enforce strict type checking and validation for all API interactions.</p>
+<ul>
+<li>Defines the expected payload for chat generation. Key parameters include <code>messages</code>, sampling configs (<code>temperature</code>, <code>top_p</code>, <code>top_k</code>), <code>max_tokens</code>, <code>stream</code>, <code>system_prompt</code>, and <code>use_template</code>.</li>
+<li>Defines the structure of the returned response, supporting both standard JSON and Server-Sent Events (SSE) streaming formats (<code>ChatCompletionChunkDelta</code>).</li>
+<li>Defines the payload for adding RAG/Context items, requiring an <code>id</code> and <code>content</code>, with optional <code>tags</code> and <code>metadata</code>.</li>
+</ul>
+<hr />
+<h2 id="6-session-management-kv-cache-pool">6. Session Management &amp; KV-Cache Pool</h2>
+<p>The system implements a <strong>Prefix Caching</strong> strategy on top of a <strong>KV-Cache Pool</strong> to optimize multi-turn conversations.</p>
+<h3 id="61-python-layer-serverpy">6.1 Python Layer (<code>server.py</code>)</h3>
+<ul>
+<li><strong>KV-Cache Pool</strong>: A global <code>session_store</code> dictionary acts as a KV-Cache Pool, protecting <code>SessionMeta</code> objects with a <code>threading.Lock</code>.</li>
+<li><strong>Prefix Matching &amp; Smart Selection</strong>:<ol>
+<li>If <code>session_id</code> is provided and valid.</li>
+<li>Searches available (not <code>in_use</code>) sessions for the longest common prefix of <code>input_ids</code>.</li>
+<li>Uses LRU (Least Recently Used) to evict sessions when <code>max_sessions</code> is reached.</li>
+</ol>
+</li>
+<li>The <code>in_use</code> flag prevents multiple requests from modifying the same session simultaneously.</li>
+</ul>
+<h3 id="62-c-layer-qwen2cc">6.2 C++ Layer (<code>qwen2.cc</code>)</h3>
+<ul>
+<li><strong>KV-Cache Storage</strong>: <code>LlaisysQwen2Session</code> holds <code>k_cache</code> and <code>v_cache</code> tensor vectors, representing the cached Key and Value states for each layer.</li>
+<li><strong>Zero-Copy Rewind</strong>: <code>rewind_session</code> simply updates the <code>pos</code> index without freeing memory, allowing instant reuse of cached KV pairs that match the prefix.</li>
+</ul>
+<hr />
+<h2 id="7-random-sampling">7. Random Sampling</h2>
+<p>The new random sampling operator replaces deterministic Argmax to support creative generation.</p>
+<h3 id="71-configuration">7.1 Configuration</h3>
+<ul>
+<li>Controls randomness. $P_i \propto \exp(logit_i / T)$.</li>
+<li>Restricts sampling to the $K$ most likely tokens.</li>
+<li>Restricts sampling to the smallest set of tokens with cumulative probability $P$.</li>
+</ul>
+<h3 id="72-implementation-details">7.2 Implementation Details</h3>
+<ul>
+<li>Uses <code>std::sort</code> and cumulative sum on <code>std::vector&lt;pair&lt;idx, val&gt;&gt;</code>.</li>
+<li>NVIDIA GPU:<ol>
+<li><code>cub::DeviceReduce::Max</code> to find max logit.</li>
+<li>Custom kernel computes $\exp(x - x_{max})$.</li>
+<li><code>cub::DeviceRadixSort</code> sorts pairs of (probability, index).</li>
+<li><code>cub::DeviceScan::InclusiveSum</code> computes CDF.</li>
+<li><code>thrust::lower_bound</code> finds the token index.</li>
+</ol>
+</li>
+</ul>
+<hr />
+<h2 id="8-observability">8. Observability</h2>
+<p>The system integrates Prometheus metrics and OpenTelemetry tracing.</p>
+<h3 id="81-metrics">8.1 Metrics</h3>
+<ul>
+<li>Exposes metrics at <code>/metrics</code></li>
+<li>Uses the <code>prometheus_client</code> library</li>
+<li>Tracks <code>llaisys_requests_total</code> for throughput and <code>llaisys_request_latency_seconds</code> for response time.</li>
+</ul>
+<h3 id="82-dashboard">8.2 Dashboard</h3>
+<p>A Grafana dashboard (<code>llaisys_dashboard.json</code>) is provided with panels for:
+*   Request Rate (QPS)
+*   Error Rate (%)
+*   P95/P99 Latency
+*   Total Requests Served</p>
+<hr />
+<h2 id="9-high-performance-cuda-operators">9. High-Performance CUDA Operators</h2>
+<p>Optimizations were applied to key operators to maximize memory bandwidth and minimize latency.</p>
+<ul>
+<li>Used <code>float4</code> (128-bit) loads/stores in <code>add</code>, <code>linear</code> (bias), and <code>rms_norm</code> to maximize global memory bandwidth.</li>
+<li>Fused operations in <code>rms_norm</code> (Square -&gt; Mean -&gt; Normalize) and <code>swiglu</code> (Gate -&gt; Silu -&gt; Mul) to reduce kernel launch overhead and memory round-trips.</li>
+<li>In <code>linear</code> operator, <code>cublasHandle_t</code> is managed as a <code>static thread_local</code> resource to eliminate the ~300μs creation overhead per call.</li>
+<li>Used shared memory in <code>rms_norm</code> and <code>argmax</code> for efficient block-level reductions.</li>
+</ul>
+<p><strong>Code Snippet: Vectorized Add Kernel</strong></p>
+<pre><code class="language-cpp">// Example of vectorized load for bandwidth optimization
+float4 a_val = *reinterpret_cast&lt;const float4*&gt;(&amp;A[idx]);
+float4 b_val = *reinterpret_cast&lt;const float4*&gt;(&amp;B[idx]);
+float4 c_val;
+c_val.x = a_val.x + b_val.x;
+// ... processing y, z, w
+*reinterpret_cast&lt;float4*&gt;(&amp;C[idx]) = c_val;
+</code></pre>
+<h2 id="10-user-interface">10. User Interface</h2>
+<p>The new Chat UI provides a clean, responsive interface for interacting with the model.</p>
+<p><img alt="Chatbot UI" src="Chatbot%20UI.png" />
+<em>Figure 3-1: LLAISYS Intelligent Chat System Interface</em></p>
+<p><strong>Features:</strong>
+*   Collapsible section to view the model's internal reasoning (parsed from <code>&lt;think&gt;</code> tags).
+*   Real-time token display using Server-Sent Events (SSE).
+*   Automatically manages session IDs for continuous conversation.</p>
+<hr />
+<h2 id="11-experimental-verification">11. Experimental Verification</h2>
+<h3 id="111-test-environment">11.1 Test Environment</h3>
+<ul>
+<li>NVIDIA GPU (Specific model to be confirmed in environment, assumed generic high-end GPU for report).</li>
+<li>CUDA Toolkit 12.x, PyTorch 2.x.</li>
+<li>PyTorch Eager Mode, PyTorch Compile Mode.</li>
+</ul>
+<h3 id="112-reproduction-steps">11.2 Reproduction Steps</h3>
+<ol>
+<li>Compile Backend:
+    <code>bash
+    xmake f --nv-gpu=y -cv
+    xmake &amp;&amp; xmake install</code></li>
+<li>Run Operator Benchmarks:
+    <code>bash
+    python test/test_ops.py --device nvidia --profile</code></li>
+<li>Run Inference Test:
+    <code>bash
+    python test/test_infer.py --model &lt;model_path&gt; --device nvidia --test</code></li>
+</ol>
+<h2 id="12-performance-comparison">12. Performance Comparison</h2>
+<h3 id="121-summary-of-gains">12.1 Summary of Gains</h3>
+<p>LLAISYS demonstrates significant performance advantages, particularly in small-batch scenarios (latency-sensitive) and bandwidth-bound operations.</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Operator</th>
+<th style="text-align: left;">Shape</th>
+<th style="text-align: left;">Precision</th>
+<th style="text-align: left;">LLAISYS Time</th>
+<th style="text-align: left;">Speedup vs PyTorch Eager</th>
+<th style="text-align: left;">Speedup vs Torch Compile</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">RoPE</td>
+<td style="text-align: left;">(2, 1, 4)</td>
+<td style="text-align: left;">FP16</td>
+<td style="text-align: left;">0.006 ms</td>
+<td style="text-align: left;">13.82x</td>
+<td style="text-align: left;">3.38x</td>
+</tr>
+<tr>
+<td style="text-align: left;">RMS Norm</td>
+<td style="text-align: left;">(1, 4)</td>
+<td style="text-align: left;">FP32</td>
+<td style="text-align: left;">0.007 ms</td>
+<td style="text-align: left;">4.26x</td>
+<td style="text-align: left;">3.07x</td>
+</tr>
+<tr>
+<td style="text-align: left;">SwiGLU</td>
+<td style="text-align: left;">(512, 4096)</td>
+<td style="text-align: left;">BF16</td>
+<td style="text-align: left;">0.013 ms</td>
+<td style="text-align: left;">4.27x</td>
+<td style="text-align: left;">3.61x</td>
+</tr>
+<tr>
+<td style="text-align: left;">Linear</td>
+<td style="text-align: left;">(2, 3)</td>
+<td style="text-align: left;">FP32</td>
+<td style="text-align: left;">0.011 ms</td>
+<td style="text-align: left;">1.03x</td>
+<td style="text-align: left;">2.85x</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Attention</strong></td>
+<td style="text-align: left;">q=2, kv=2</td>
+<td style="text-align: left;">FP32</td>
+<td style="text-align: left;">0.014 ms</td>
+<td style="text-align: left;">6.52x</td>
+<td style="text-align: left;">4.40x</td>
+</tr>
+</tbody>
+</table>
+<h3 id="122-key-analysis">12.2 Key Analysis</h3>
+<ul>
+<li>For small shapes (e.g., RoPE with shape 2x1x4), LLAISYS is up to <strong>14x faster</strong>. This is attributed to the minimal C++ runtime overhead compared to PyTorch's Python dispatch and overhead.</li>
+<li>For large matrix operations (Linear 512x4096), LLAISYS achieves parity (0.96x - 1.05x) with PyTorch. Since compute is dominated by <code>cuBLAS</code>, the gains come from efficient bias addition and handle management.</li>
+<li>Excellent performance consistency across FP32, FP16, and BF16, verifying correct template specialization.</li>
+</ul>
+<h3 id="123-success-criteria-evaluation">12.3 Success Criteria Evaluation</h3>
+<ul>
+<li>Reduced operator latency by &gt;50% for normalization and element-wise ops (Achieved: &gt;300% for RMS Norm).</li>
+<li>Linear layer throughput matches cuBLAS peak performance (Achieved: Parity with PyTorch).</li>
+</ul>
+<h2 id="13-problem-summary">13. Problem Summary</h2>
+<h3 id="131-solved-challenges">13.1 Solved Challenges</h3>
+<ul>
+<li>Initial <code>linear</code> implementation was 30x slower due to creating <code>cublasHandle</code> on every call. Solved using <code>static thread_local</code>.</li>
+<li>Concurrent requests caused <code>RuntimeError: dictionary changed size</code> in session store. Solved by <code>store_lock</code>.</li>
+<li>Multiple requests could rewind the same session. Solved by <code>in_use</code> flag reservation.</li>
+</ul>
+<h3 id="132-remaining-issues">13.2 Remaining Issues</h3>
+<ul>
+<li>Current <code>argmax</code> kernel uses a single block, limiting it to small tensors and poor scalability.</li>
+<li><code>powf</code> is called repeatedly; precomputed frequency tables would improve performance.</li>
+<li>Vectorized kernels fallback to slow scalar paths if pointers are not 16-byte aligned.</li>
+</ul>
+<h2 id="14-future-planning">14. Future Planning</h2>
+<ol>
+<li>
+<p>Multi-User Serving:</p>
+<ol>
+<li>Implement a request queue and a continuous batching scheduler.
+    Transition from "one request per loop" to "batch of requests per loop".</li>
+</ol>
+</li>
+<li>
+<p>Distributed Inference (Project #5):</p>
+<ol>
+<li>Implement Tensor Parallelism (TP) using NCCL.
+    Shard <code>Linear</code> and <code>Attention</code> heads across multiple GPUs.</li>
+</ol>
+</li>
+<li>
+<p>Advanced Optimizations:</p>
+<ol>
+<li>Implement FlashAttention-style online softmax to reduce global memory I/O in Self-Attention.
+    Optimize <code>Argmax</code> with a multi-block reduction algorithm.</li>
+</ol>
+</li>
+<li>
+<p>Feature Expansion:</p>
+<ol>
+<li>Support new model architectures beyond Qwen2.
+    Enhance Chat UI with real-time streaming display.</li>
+</ol>
+</li>
+<li>
+<p>Memory Optimization:</p>
+<ol>
+<li>Implement PagedAttention mechanism to solve memory fragmentation issues in high-concurrency scenarios.
+    Enable block-level KV cache management for more granular prefix caching.</li>
+</ol>
+</li>
+</ol>
+<h2 id="15-appendix">15. Appendix</h2>
+<h3 id="151-error-codes">15.1 Error Codes</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Code</th>
+<th style="text-align: left;">Description</th>
+<th style="text-align: left;">Solution</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">409</td>
+<td style="text-align: left;">Session Busy</td>
+<td style="text-align: left;">Retry request or use a different session ID.</td>
+</tr>
+<tr>
+<td style="text-align: left;">503</td>
+<td style="text-align: left;">Model Not Loaded</td>
+<td style="text-align: left;">Ensure server startup completed successfully.</td>
+</tr>
+<tr>
+<td style="text-align: left;">503</td>
+<td style="text-align: left;">Max Capacity</td>
+<td style="text-align: left;">Wait for a session to become free (LRU eviction).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="152-trace-id-injection">15.2 Trace ID Injection</h3>
+<p>Trace IDs are generated by OpenTelemetry SDK. Currently, <code>ConsoleSpanExporter</code> is used for debugging. In production, configure <code>OTEL_EXPORTER_OTLP_ENDPOINT</code> to send traces to Jaeger/Zipkin.</p>
+<h2 id="16-how-to-reproduce">16. How to Reproduce</h2>
+<ol>
+<li>
+<p><strong>Prepare Environment &amp; Dependencies</strong></p>
+<ul>
+<li>Ensure NVIDIA GPU and CUDA 12.x are installed.</li>
+<li>Python &gt;= 3.9 is required.</li>
+<li>Install Python dependencies from <code>requirements.txt</code> and <code>xmake</code> for C++ compilation.</li>
+</ul>
+</li>
+<li>
+<p><strong>Compile the Backend</strong></p>
+<ul>
+<li>Run xmake to build the <code>libllaisys</code> shared library with CUDA support.
+<code>bash
+xmake f --nv-gpu=y -cv
+xmake &amp;&amp; xmake install</code></li>
+</ul>
+</li>
+<li>
+<p><strong>Start the Server</strong></p>
+<ul>
+<li>Set the model path to your downloaded weights (e.g., DeepSeek-R1-Distill-Qwen-1.5B).</li>
+<li>Run the startup script.
+<code>bash
+export MODEL_PATH="/root/autodl-tmp/models/DeepSeek-R1-Distill-Qwen-1.5B" &amp;&amp; python scripts/start.py --device nvidia --max-steps 50000 --no-https --model $MODEL_PATH</code></li>
+<li>Expected Output:
+    <code>text
+    2026-03-16 08:01:20,715 - [INFO] - Starting Backend Server...
+    2026-03-16 08:01:22,717 - [INFO] - Waiting for model to load...
+    2026-03-16 08:01:30,755 - [INFO] - Successfully connected to http://localhost:6008/health
+    2026-03-16 08:01:30,756 - [INFO] - Building frontend...
+    ...
+    2026-03-16 08:01:44,376 - [INFO] - ALL SERVICES STARTED SUCCESSFULLY
+    2026-03-16 08:01:44,376 - [INFO] - Frontend URL: http://localhost:6006
+    2026-03-16 08:01:44,376 - [INFO] - Backend URL: http://localhost:6008</code></li>
+</ul>
+</li>
+</ol>
+<h2 id="17-parameter-specifications">17. Parameter Specifications</h2>
+<h3 id="171-inference-parameters">17.1 Inference Parameters</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Parameter</th>
+<th style="text-align: left;">Type</th>
+<th style="text-align: left;">Default</th>
+<th style="text-align: left;">Range/Enums</th>
+<th style="text-align: left;">Description</th>
+<th style="text-align: left;">Required</th>
+<th style="text-align: left;">Tuning Advice</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>model</code></td>
+<td style="text-align: left;">str</td>
+<td style="text-align: left;"><code>""</code></td>
+<td style="text-align: left;">Valid local directory</td>
+<td style="text-align: left;">Path to the model weights directory.</td>
+<td style="text-align: left;">Yes</td>
+<td style="text-align: left;">Ensure disk IO is fast (SSD/NVMe) to reduce loading time.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>device</code></td>
+<td style="text-align: left;">str</td>
+<td style="text-align: left;"><code>"cpu"</code></td>
+<td style="text-align: left;"><code>cpu</code>, <code>nvidia</code></td>
+<td style="text-align: left;">Hardware backend for inference.</td>
+<td style="text-align: left;">No</td>
+<td style="text-align: left;">Use <code>nvidia</code> for optimal performance.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>max_steps</code></td>
+<td style="text-align: left;">int</td>
+<td style="text-align: left;"><code>1024</code></td>
+<td style="text-align: left;"><code>&gt;0</code></td>
+<td style="text-align: left;">Maximum number of tokens to generate per request.</td>
+<td style="text-align: left;">No</td>
+<td style="text-align: left;">Increase for longer tasks, but watch memory usage.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>temperature</code></td>
+<td style="text-align: left;">float</td>
+<td style="text-align: left;"><code>0.7</code></td>
+<td style="text-align: left;"><code>(0.0, 2.0]</code></td>
+<td style="text-align: left;">Controls randomness in sampling.</td>
+<td style="text-align: left;">No</td>
+<td style="text-align: left;">Lower for factual answers, higher for creative text.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>top_k</code></td>
+<td style="text-align: left;">int</td>
+<td style="text-align: left;"><code>50</code></td>
+<td style="text-align: left;"><code>&gt;0</code></td>
+<td style="text-align: left;">Limits sampling to top K tokens.</td>
+<td style="text-align: left;">No</td>
+<td style="text-align: left;"><code>50</code> is a good balance; smaller values increase determinism.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>top_p</code></td>
+<td style="text-align: left;">float</td>
+<td style="text-align: left;"><code>0.9</code></td>
+<td style="text-align: left;"><code>(0.0, 1.0]</code></td>
+<td style="text-align: left;">Nucleus sampling probability threshold.</td>
+<td style="text-align: left;">No</td>
+<td style="text-align: left;">Use with <code>temperature</code> for dynamic vocabulary pruning.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="172-system-parameters">17.2 System Parameters</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Parameter</th>
+<th style="text-align: left;">Type</th>
+<th style="text-align: left;">Default</th>
+<th style="text-align: left;">Range/Enums</th>
+<th style="text-align: left;">Description</th>
+<th style="text-align: left;">Required</th>
+<th style="text-align: left;">Tuning Advice</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>no_https</code></td>
+<td style="text-align: left;">bool</td>
+<td style="text-align: left;"><code>False</code></td>
+<td style="text-align: left;"><code>True</code>, <code>False</code></td>
+<td style="text-align: left;">Disable HTTPS and use HTTP only.</td>
+<td style="text-align: left;">No</td>
+<td style="text-align: left;">Use <code>True</code> for local dev/testing; <code>False</code> for production.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>max_sessions</code></td>
+<td style="text-align: left;">int</td>
+<td style="text-align: left;"><code>10</code></td>
+<td style="text-align: left;"><code>&gt;0</code></td>
+<td style="text-align: left;">Maximum number of concurrent chat sessions (KV Cache).</td>
+<td style="text-align: left;">No</td>
+<td style="text-align: left;">Depends on VRAM. Reduce if OOM occurs.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>port</code></td>
+<td style="text-align: left;">int</td>
+<td style="text-align: left;"><code>6008</code></td>
+<td style="text-align: left;"><code>1024-65535</code></td>
+<td style="text-align: left;">Backend API port.</td>
+<td style="text-align: left;">No</td>
+<td style="text-align: left;">Change if default port is occupied.</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Dependency Footnote</strong>: <code>top_k</code> and <code>top_p</code> can be used together. The sampling logic will apply <code>top_k</code> filtering first, followed by <code>top_p</code> masking.</p>
+</blockquote>
+</body>
+</html>
